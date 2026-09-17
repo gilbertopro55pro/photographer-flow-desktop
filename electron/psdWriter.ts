@@ -325,8 +325,16 @@ async function coverCropRaw(
     if (!meta.width || !meta.height) return null;
     const imgAspect = meta.width / meta.height;
     const boxAspect = targetWidth / targetHeight;
-    const drawW = imgAspect > boxAspect ? Math.round(targetHeight * imgAspect) : targetWidth;
-    const drawH = imgAspect > boxAspect ? targetHeight : Math.round(targetWidth / imgAspect);
+    // Cover-fit size first, THEN apply the extra zoom to that (not to an already-cropped
+    // target-size image) — mirrors the web app's own fix (albumRaster.ts): cropping down to target
+    // size before zooming (the old approach, extract-then-resize below) throws away exactly the
+    // pixels a zoom would need to pan into on whichever axis had zero baseline cover slack, which
+    // is why panning used to only ever work in one direction once zoomed in.
+    const zf = extra?.zoom && extra.zoom !== 100 ? extra.zoom / 100 : 1;
+    const baseW = imgAspect > boxAspect ? Math.round(targetHeight * imgAspect) : targetWidth;
+    const baseH = imgAspect > boxAspect ? targetHeight : Math.round(targetWidth / imgAspect);
+    const drawW = Math.max(targetWidth, Math.round(baseW * zf));
+    const drawH = Math.max(targetHeight, Math.round(baseH * zf));
     img = img.resize(drawW, drawH);
     if (filter === "sepia") img = img.tint({ r: 112, g: 66, b: 20 });
     else if (filter === "bw" && bakeInBw) img = img.modulate({ saturation: 0 });
@@ -338,20 +346,6 @@ async function coverCropRaw(
     const left = Math.min(Math.max(0, Math.round((drawW - targetWidth) * (focalXPct / 100))), Math.max(0, drawW - targetWidth));
     const top = Math.min(Math.max(0, Math.round((drawH - targetHeight) * (focalYPct / 100))), Math.max(0, drawH - targetHeight));
     let data = await img.extract({ left, top, width: targetWidth, height: targetHeight }).ensureAlpha().raw().toBuffer();
-
-    if (extra?.zoom && extra.zoom !== 100) {
-      const zf = extra.zoom / 100;
-      const subW = Math.max(1, Math.round(targetWidth / zf));
-      const subH = Math.max(1, Math.round(targetHeight / zf));
-      const subLeft = Math.round((targetWidth - subW) / 2);
-      const subTop = Math.round((targetHeight - subH) / 2);
-      data = await sharp(data, { raw: { width: targetWidth, height: targetHeight, channels: 4 } })
-        .extract({ left: subLeft, top: subTop, width: subW, height: subH })
-        .resize(targetWidth, targetHeight)
-        .ensureAlpha()
-        .raw()
-        .toBuffer();
-    }
 
     // Ported from the web app's own export pipeline — same tone-curve/color-matrix math the live
     // preview's SVG filter uses (see albumAdjustments.ts), applied to the final raw buffer so it
@@ -439,7 +433,9 @@ async function shadowLayerPng(
   frameY: number,
   rotationDeg?: number,
   distancePct?: number,
-  blurPct?: number
+  blurPct?: number,
+  pageWidth?: number,
+  pageHeight?: number
 ): Promise<{ buffer: Buffer; left: number; top: number } | null> {
   if (!shadowPct) return null;
   const blurPx = Math.max(1, ((blurPct ?? shadowPct) / 100) * 24);
@@ -464,9 +460,11 @@ async function shadowLayerPng(
   let top = Math.round(centerY + offsetPx - canvasH / 2);
   const cropLeft = Math.max(0, -left);
   const cropTop = Math.max(0, -top);
-  if (cropLeft || cropTop) {
-    const cropW = canvasW - cropLeft;
-    const cropH = canvasH - cropTop;
+  const cropRight = pageWidth != null ? Math.max(0, left + canvasW - pageWidth) : 0;
+  const cropBottom = pageHeight != null ? Math.max(0, top + canvasH - pageHeight) : 0;
+  if (cropLeft || cropTop || cropRight || cropBottom) {
+    const cropW = canvasW - cropLeft - cropRight;
+    const cropH = canvasH - cropTop - cropBottom;
     if (cropW <= 0 || cropH <= 0) return null;
     buffer = await sharp(buffer).extract({ left: cropLeft, top: cropTop, width: cropW, height: cropH }).png().toBuffer();
     left = Math.max(0, left);
@@ -649,7 +647,7 @@ export async function writeAlbumPagePsd(savePath: string, widthPx: number, heigh
       });
       const top = Math.round(frameTop + tile.top);
       const left = Math.round(frameLeft + tile.left);
-      const shapeShadow = await shadowLayerPng(w, h, el.shadow, frameLeft, frameTop, el.rotation);
+      const shapeShadow = await shadowLayerPng(w, h, el.shadow, frameLeft, frameTop, el.rotation, undefined, undefined, widthPx, heightPx);
       if (shapeShadow) {
         const shadowRgba = await pngToRawRgba(shapeShadow.buffer);
         children.push({
@@ -695,7 +693,7 @@ export async function writeAlbumPagePsd(savePath: string, widthPx: number, heigh
     });
     if (!tile) continue;
 
-    const shadow = await shadowLayerPng(width, height, el.shadow, frameLeft, frameTop, el.rotation, el.shadowDistance, el.shadowBlur);
+    const shadow = await shadowLayerPng(width, height, el.shadow, frameLeft, frameTop, el.rotation, el.shadowDistance, el.shadowBlur, widthPx, heightPx);
     if (shadow) {
       const shadowRgba = await pngToRawRgba(shadow.buffer);
       children.push({
