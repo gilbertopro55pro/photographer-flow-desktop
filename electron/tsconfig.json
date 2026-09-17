@@ -10,5 +10,5 @@
     "outDir": "../dist-electron",
     "resolveJsonModule": true
   },
-  "include": ["main.ts", "preload.cts", "browserViewPreload.cts", "psdWriter.ts", "albumMasks.ts"]
+  "include": ["main.ts", "preload.cts", "browserViewPreload.cts", "psdWriter.ts", "albumMasks.ts", "albumAdjustments.ts", "albumSharpen.ts"]
 }

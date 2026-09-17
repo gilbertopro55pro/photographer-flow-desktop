@@ -40,9 +40,27 @@ export type AlbumPhotoElement = {
   opacity?: number;
   blur?: number;
   shadow?: number;
+  // Ported from the web app's own editor — independent overrides for the shadow's offset/softness;
+  // undefined means "derive from `shadow` itself", same coupled behavior as before these existed.
+  shadowDistance?: number;
+  shadowBlur?: number;
   zoom?: number;
   lockAspect?: boolean;
   maskId?: string;
+  // Color/tone adjustments, all -100..100, undefined/0 = no change from the original photo — see
+  // src/lib/albumAdjustments.ts (ported from the web app's own) for the shared math.
+  exposure?: number;
+  contrast?: number;
+  highlights?: number;
+  shadows2?: number; // suffixed to avoid colliding with the unrelated page-level `shadow` above
+  whites?: number;
+  blacks?: number;
+  temp?: number; // white balance: cool (-) to warm (+)
+  tint?: number; // green (-) to magenta (+)
+  vibrance?: number;
+  saturation2?: number; // suffixed — `filter: "bw"` already means "fully desaturated" and is separate
+  // 0-100 edge-enhancement intensity — see src/lib/albumSharpen.ts (ported from the web app's own).
+  sharpness?: number;
 };
 
 export type AlbumFontSizePt = number;

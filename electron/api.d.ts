@@ -17,8 +17,25 @@ type AlbumPhotoElementInput = {
   opacity?: number;
   blur?: number;
   shadow?: number;
+  shadowDistance?: number;
+  shadowBlur?: number;
   zoom?: number;
   maskId?: string;
+  // Ported from the web app's own export pipeline — same shape as PhotoAdjustments
+  // (src/lib/albumAdjustments.ts), inlined here to match this file's own no-import convention.
+  adjustments?: {
+    exposure?: number;
+    contrast?: number;
+    highlights?: number;
+    shadows2?: number;
+    whites?: number;
+    blacks?: number;
+    temp?: number;
+    tint?: number;
+    vibrance?: number;
+    saturation2?: number;
+  };
+  sharpness?: number;
 };
 type AlbumTextElementInput = {
   kind: "text";

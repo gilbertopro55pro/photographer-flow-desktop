@@ -262,8 +262,24 @@ export default function AlbumPageEditor({
             opacity: el.opacity,
             blur: el.blur,
             shadow: el.shadow,
+            shadowDistance: el.shadowDistance,
+            shadowBlur: el.shadowBlur,
             zoom: el.zoom,
             maskId: el.maskId,
+            // Ported from the web app's own export pipeline — same fields hasAdjustments checks.
+            adjustments: {
+              exposure: el.exposure,
+              contrast: el.contrast,
+              highlights: el.highlights,
+              shadows2: el.shadows2,
+              whites: el.whites,
+              blacks: el.blacks,
+              temp: el.temp,
+              tint: el.tint,
+              vibrance: el.vibrance,
+              saturation2: el.saturation2,
+            },
+            sharpness: el.sharpness,
             imageBytes: Array.from(new Uint8Array(bytes)),
           };
         })

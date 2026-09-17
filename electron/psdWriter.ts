@@ -5,6 +5,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import fontkit from "@pdf-lib/fontkit";
 import { ALBUM_MASKS } from "./albumMasks.js";
+import { applyAdjustmentsToRgba, hasAdjustments, type PhotoAdjustments } from "./albumAdjustments.js";
+import { sharpSharpenOptions } from "./albumSharpen.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FONTS_DIR = path.join(__dirname, "../public/fonts");
@@ -283,7 +285,7 @@ async function coverCropRaw(
   focalYPct: number,
   filter: AlbumPhotoFilter,
   bakeInBw: boolean,
-  extra?: { opacity?: number; blur?: number; zoom?: number }
+  extra?: { opacity?: number; blur?: number; zoom?: number; adjustments?: PhotoAdjustments; sharpness?: number }
 ): Promise<{ data: Buffer; width: number; height: number } | null> {
   try {
     let img = sharp(buffer).rotate();
@@ -297,6 +299,10 @@ async function coverCropRaw(
     if (filter === "sepia") img = img.tint({ r: 112, g: 66, b: 20 });
     else if (filter === "bw" && bakeInBw) img = img.modulate({ saturation: 0 });
     if (extra?.blur) img = img.blur(Math.max(0.3, (extra.blur / 100) * ALBUM_BLUR_MAX_PX));
+    // Ported from the web app's own export pipeline (albumRaster.ts) — sharp's own .sharpen()
+    // ahead of the raw extract, mirroring the live preview's SVG convolution filter.
+    const sharpenOpts = sharpSharpenOptions(extra?.sharpness);
+    if (sharpenOpts) img = img.sharpen(sharpenOpts);
     const left = Math.min(Math.max(0, Math.round((drawW - targetWidth) * (focalXPct / 100))), Math.max(0, drawW - targetWidth));
     const top = Math.min(Math.max(0, Math.round((drawH - targetHeight) * (focalYPct / 100))), Math.max(0, drawH - targetHeight));
     let data = await img.extract({ left, top, width: targetWidth, height: targetHeight }).ensureAlpha().raw().toBuffer();
@@ -314,6 +320,11 @@ async function coverCropRaw(
         .raw()
         .toBuffer();
     }
+
+    // Ported from the web app's own export pipeline — same tone-curve/color-matrix math the live
+    // preview's SVG filter uses (see albumAdjustments.ts), applied to the final raw buffer so it
+    // matches the already-cropped/zoomed pixels exactly.
+    if (extra?.adjustments && hasAdjustments(extra.adjustments)) applyAdjustmentsToRgba(data, extra.adjustments);
 
     if (extra?.opacity !== undefined && extra.opacity < 100) {
       const factor = Math.max(0, extra.opacity) / 100;
@@ -334,9 +345,25 @@ async function composePhotoTile(
   focalY: number,
   filter: AlbumPhotoFilter,
   bakeInBw: boolean,
-  extra: { rotation?: number; opacity?: number; blur?: number; zoom?: number; borderWidth?: number; borderColor?: string; maskId?: string }
+  extra: {
+    rotation?: number;
+    opacity?: number;
+    blur?: number;
+    zoom?: number;
+    borderWidth?: number;
+    borderColor?: string;
+    maskId?: string;
+    adjustments?: PhotoAdjustments;
+    sharpness?: number;
+  }
 ): Promise<{ data: Buffer; width: number; height: number; left: number; top: number } | null> {
-  const cropped = await coverCropRaw(buffer, width, height, focalX, focalY, filter, bakeInBw, { opacity: extra.opacity, blur: extra.blur, zoom: extra.zoom });
+  const cropped = await coverCropRaw(buffer, width, height, focalX, focalY, filter, bakeInBw, {
+    opacity: extra.opacity,
+    blur: extra.blur,
+    zoom: extra.zoom,
+    adjustments: extra.adjustments,
+    sharpness: extra.sharpness,
+  });
   if (!cropped) return null;
   let data = cropped.data;
   let w = width;
@@ -372,10 +399,19 @@ async function composePhotoTile(
   return { data, width: w, height: h, left, top };
 }
 
-async function shadowLayerPng(width: number, height: number, shadowPct: number | undefined, frameX: number, frameY: number, rotationDeg?: number): Promise<{ buffer: Buffer; left: number; top: number } | null> {
+async function shadowLayerPng(
+  width: number,
+  height: number,
+  shadowPct: number | undefined,
+  frameX: number,
+  frameY: number,
+  rotationDeg?: number,
+  distancePct?: number,
+  blurPct?: number
+): Promise<{ buffer: Buffer; left: number; top: number } | null> {
   if (!shadowPct) return null;
-  const blurPx = Math.max(1, (shadowPct / 100) * 24);
-  const offsetPx = Math.round((shadowPct / 100) * 10);
+  const blurPx = Math.max(1, ((blurPct ?? shadowPct) / 100) * 24);
+  const offsetPx = Math.round(((distancePct ?? shadowPct) / 100) * 10);
   const alpha = 0.15 + (shadowPct / 100) * 0.45;
   const pad = Math.ceil(blurPx * 3);
   let canvasW = width + pad * 2;
@@ -426,8 +462,13 @@ export type ExportPhotoElement = {
   opacity?: number;
   blur?: number;
   shadow?: number;
+  shadowDistance?: number;
+  shadowBlur?: number;
   zoom?: number;
   maskId?: string;
+  // Ported from the web app's own export pipeline — see PhotoAdjustments' own comment.
+  adjustments?: PhotoAdjustments;
+  sharpness?: number;
 };
 export type ExportTextElement = {
   kind: "text";
@@ -597,10 +638,12 @@ export async function writeAlbumPagePsd(savePath: string, widthPx: number, heigh
       borderWidth: el.borderWidth,
       borderColor: el.borderColor,
       maskId: el.maskId,
+      adjustments: el.adjustments,
+      sharpness: el.sharpness,
     });
     if (!tile) continue;
 
-    const shadow = await shadowLayerPng(width, height, el.shadow, frameLeft, frameTop, el.rotation);
+    const shadow = await shadowLayerPng(width, height, el.shadow, frameLeft, frameTop, el.rotation, el.shadowDistance, el.shadowBlur);
     if (shadow) {
       const shadowRgba = await pngToRawRgba(shadow.buffer);
       children.push({

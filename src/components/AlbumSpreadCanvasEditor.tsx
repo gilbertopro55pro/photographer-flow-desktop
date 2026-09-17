@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AlbumElement, AlbumFrame, AlbumOrnamentElement, AlbumPhotoElement, AlbumPhotoFilter, AlbumShapeElement, AlbumTemplateRow, AlbumTextElement, GalleryAlbumSpreadRow } from "@/lib/types";
 import { ALBUM_FONTS, ALBUM_FONT_CLASS_NAMES, albumFontFamilyCss } from "@/lib/albumFonts";
 import { TEXT_COLOR_PALETTE, isLightTextColor } from "@/lib/textColor";
@@ -8,6 +8,8 @@ import { TEMPLATE_TABS, TEMPLATE_BANK, type TemplateTabKey } from "@/lib/albumTe
 import { ALBUM_MASKS, maskCssUrl, findMask } from "@/lib/albumMasks";
 import { ALBUM_ORNAMENTS, ORNAMENT_TABS, findOrnament, ornamentDataUrl } from "@/lib/albumOrnaments";
 import { textHeightPctForFontSize, MAX_TEXT_HEIGHT_OVERSIZE_RATIO } from "@/lib/albumTextSizing";
+import { hasAdjustments, adjustmentsFilterId, adjustmentsSvgFilter, type PhotoAdjustments } from "@/lib/albumAdjustments";
+import { sharpenFilterId, sharpenSvgFilter } from "@/lib/albumSharpen";
 
 type PhotoWithUrl = { id: string; url: string; is_favorite?: boolean; folder_id?: string | null; original_filename?: string; created_at?: string };
 
@@ -72,6 +74,16 @@ function IconBW() {
     <MenuIconBase>
       <circle cx={12} cy={12} r={8} />
       <path d="M12 4a8 8 0 000 16z" fill="currentColor" stroke="none" />
+    </MenuIconBase>
+  );
+}
+function IconAdjust() {
+  return (
+    <MenuIconBase>
+      <path d="M5 4v7M5 15v5M12 4v3M12 11v9M19 4v11M19 19v1" />
+      <circle cx={5} cy={13} r={1.8} />
+      <circle cx={12} cy={9} r={1.8} />
+      <circle cx={19} cy={17} r={1.8} />
     </MenuIconBase>
   );
 }
@@ -321,11 +333,27 @@ function PhotoFloatingMenu({
   onBringToFront: () => void;
   onSendToBack: () => void;
 }) {
-  const [openPanel, setOpenPanel] = useState<null | "opacity" | "blur" | "rotation" | "shadow">(null);
+  const [openPanel, setOpenPanel] = useState<null | "opacity" | "blur" | "rotation" | "shadow" | "adjust">(null);
   const onLeft = el.xPct + el.widthPct > 70;
   const side: "left" | "right" = onLeft ? "left" : "right";
   const rotationPct = Math.round((((el.rotation ?? 0) % 360) + 360) % 360 / 360 * 100);
   const toggle = (panel: typeof openPanel) => setOpenPanel((p) => (p === panel ? null : panel));
+
+  // מרחק/טשטוש (distance/blur) fall back to el.shadow (עוצמה) while unset, so an existing shadow
+  // that predates these two fields still shows a sensible starting point. Left purely reactive,
+  // that fallback would make dragging עוצמה visually drag distance/blur's thumbs along with it, so
+  // both are materialized into real, independent stored values the moment a shadow first becomes
+  // active (0 → positive) — from that tick on, all three are backed by separate fields.
+  const shadowActiveTrackRef = useRef<{ id: string; wasActive: boolean } | null>(null);
+  useEffect(() => {
+    const isActive = !!el.shadow;
+    const prev = shadowActiveTrackRef.current;
+    const justActivated = !prev || prev.id !== el.id ? isActive : isActive && !prev.wasActive;
+    if (justActivated && (el.shadowDistance === undefined || el.shadowBlur === undefined)) {
+      onUpdate({ shadowDistance: el.shadowDistance ?? el.shadow, shadowBlur: el.shadowBlur ?? el.shadow });
+    }
+    shadowActiveTrackRef.current = { id: el.id, wasActive: isActive };
+  }, [el.id, el.shadow, el.shadowDistance, el.shadowBlur, onUpdate]);
 
   return (
     <div
@@ -342,6 +370,16 @@ function PhotoFloatingMenu({
       onClick={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
     >
+      <div className="relative">
+        <CircleButton label="עריכת תמונה — חשיפה, ניגודיות, איזון לבן ועוד" active={openPanel === "adjust" || hasAdjustments(el)} onClick={() => toggle("adjust")}>
+          <IconAdjust />
+        </CircleButton>
+        {openPanel === "adjust" && (
+          <div className="absolute top-1/2 -translate-y-1/2" style={{ [side]: "calc(100% + 8px)" } as React.CSSProperties}>
+            <PhotoAdjustFloatingMenu el={el} onUpdate={onUpdate} />
+          </div>
+        )}
+      </div>
       <CircleButton label="שחור-לבן" active={el.filter === "bw"} onClick={() => onUpdate({ filter: el.filter === "bw" ? "none" : "bw" })}>
         <IconBW />
       </CircleButton>
@@ -409,7 +447,27 @@ function PhotoFloatingMenu({
         </CircleButton>
         {openPanel === "shadow" && (
           <FlyoutPanel side={side} width={150}>
-            <MiniSlider label="צל" value={el.shadow ?? 0} min={0} max={100} unit="%" onChange={(v) => onUpdate({ shadow: v })} />
+            <MiniSlider label="עוצמת צל" value={el.shadow ?? 0} min={0} max={100} unit="%" onChange={(v) => onUpdate({ shadow: v })} />
+            {!!el.shadow && (
+              <>
+                <MiniSlider
+                  label="מרחק צל"
+                  value={el.shadowDistance ?? el.shadow ?? 0}
+                  min={0}
+                  max={100}
+                  unit="%"
+                  onChange={(v) => onUpdate({ shadowDistance: v })}
+                />
+                <MiniSlider
+                  label="טשטוש צל"
+                  value={el.shadowBlur ?? el.shadow ?? 0}
+                  min={0}
+                  max={100}
+                  unit="%"
+                  onChange={(v) => onUpdate({ shadowBlur: v })}
+                />
+              </>
+            )}
             <MiniSlider label="קו מתאר" value={el.borderWidth ?? 0} min={0} max={50} unit="px" onChange={(v) => onUpdate({ borderWidth: v })} />
             {!!el.borderWidth && (
               <div className="flex items-center gap-1.5">
@@ -441,6 +499,67 @@ function PhotoFloatingMenu({
       <CircleButton label="מחיקת התמונה/ות שנבחרו" onClick={onDeleteSelected}>
         <IconTrash />
       </CircleButton>
+    </div>
+  );
+}
+
+// Small section-group label for PhotoAdjustFloatingMenu below — purely visual grouping (WB/Tone/
+// Presence/Detail), ported from the web app's own editor.
+function AdjustSectionLabel({ children }: { children: React.ReactNode }) {
+  return <p className="font-bold text-ink-soft uppercase tracking-wide text-[10px] pt-1 first:pt-0">{children}</p>;
+}
+
+// Ported from the web app's own editor. Opens for one or more selected photos (broadcasts to the
+// whole selection via the same applyToSelectedPhotos already used for opacity/rotation/etc) — a
+// plain object of small numeric sliders in the same visual language as Ornament/Shape's own
+// menus, just wider since there's more to fit per row. See src/lib/albumAdjustments.ts for what
+// each slider actually does to the pixels, and why Texture/Clarity/Dehaze aren't here. Dropped
+// web's compact/maxHeightPx/widthPx props (phone-specific sizing) — not applicable to a fixed-size
+// Electron window.
+function PhotoAdjustFloatingMenu({ el, onUpdate }: { el: AlbumPhotoElement; onUpdate: (patch: Partial<AlbumPhotoElement>) => void }) {
+  const hasAny = hasAdjustments(el);
+  return (
+    <div className="rounded-xl border border-line bg-white shadow-sheet w-[280px] p-3 space-y-2.5" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-bold">עריכת תמונה</p>
+        {hasAny && (
+          <button
+            onClick={() =>
+              onUpdate({
+                exposure: 0,
+                contrast: 0,
+                highlights: 0,
+                shadows2: 0,
+                whites: 0,
+                blacks: 0,
+                temp: 0,
+                tint: 0,
+                vibrance: 0,
+                saturation2: 0,
+                sharpness: 0,
+              })
+            }
+            className="font-semibold text-ink-soft underline text-[10px]"
+          >
+            איפוס
+          </button>
+        )}
+      </div>
+      <AdjustSectionLabel>איזון לבן</AdjustSectionLabel>
+      <MiniSlider label="חום" value={el.temp ?? 0} min={-100} max={100} onChange={(v) => onUpdate({ temp: v })} />
+      <MiniSlider label="גוון" value={el.tint ?? 0} min={-100} max={100} onChange={(v) => onUpdate({ tint: v })} />
+      <AdjustSectionLabel>גוונים</AdjustSectionLabel>
+      <MiniSlider label="חשיפה" value={el.exposure ?? 0} min={-100} max={100} onChange={(v) => onUpdate({ exposure: v })} />
+      <MiniSlider label="ניגודיות" value={el.contrast ?? 0} min={-100} max={100} onChange={(v) => onUpdate({ contrast: v })} />
+      <MiniSlider label="אורות גבוהים" value={el.highlights ?? 0} min={-100} max={100} onChange={(v) => onUpdate({ highlights: v })} />
+      <MiniSlider label="צללים" value={el.shadows2 ?? 0} min={-100} max={100} onChange={(v) => onUpdate({ shadows2: v })} />
+      <MiniSlider label="לבנים" value={el.whites ?? 0} min={-100} max={100} onChange={(v) => onUpdate({ whites: v })} />
+      <MiniSlider label="שחורים" value={el.blacks ?? 0} min={-100} max={100} onChange={(v) => onUpdate({ blacks: v })} />
+      <AdjustSectionLabel>עוצמת צבע</AdjustSectionLabel>
+      <MiniSlider label="עוצמה" value={el.vibrance ?? 0} min={-100} max={100} onChange={(v) => onUpdate({ vibrance: v })} />
+      <MiniSlider label="רוויה" value={el.saturation2 ?? 0} min={-100} max={100} onChange={(v) => onUpdate({ saturation2: v })} />
+      <AdjustSectionLabel>פירוט</AdjustSectionLabel>
+      <MiniSlider label="חידוד" value={el.sharpness ?? 0} min={0} max={100} onChange={(v) => onUpdate({ sharpness: v })} />
     </div>
   );
 }
@@ -711,20 +830,29 @@ export function fitFramesToSafeArea(frames: AlbumFrame[], marginInsetPct: { x: n
   }));
 }
 
-export function cssFilterFor(filter: AlbumPhotoFilter | undefined, blurPct: number | undefined): string | undefined {
+// adjust/sharpness params ported from the web app's own editor (src/lib/albumRender.ts) — the
+// url(#...) filter ids reference the <svg><defs> block rendered alongside the canvas.
+export function cssFilterFor(
+  filter: AlbumPhotoFilter | undefined,
+  blurPct: number | undefined,
+  adjust?: { id: string; adj: PhotoAdjustments },
+  sharpness?: number
+): string | undefined {
   const parts: string[] = [];
   if (filter === "bw") parts.push("grayscale(1)");
   else if (filter === "sepia") parts.push("sepia(0.85)");
   if (blurPct) parts.push(`blur(${(blurPct / 100) * ALBUM_BLUR_MAX_PX}px)`);
+  if (adjust && hasAdjustments(adjust.adj)) parts.push(`url(#${adjustmentsFilterId(adjust.id, adjust.adj)})`);
+  if (adjust && sharpness) parts.push(`url(#${sharpenFilterId(adjust.id, sharpness)})`);
   return parts.length ? parts.join(" ") : undefined;
 }
 
 // box-shadow (unlike filter: drop-shadow on a descendant) isn't clipped by the frame's own
 // overflow-hidden, so it's the one that can actually bleed outside a cropped photo frame.
-export function boxShadowFor(shadowPct: number | undefined): string | undefined {
+export function boxShadowFor(shadowPct: number | undefined, distancePct?: number, blurPct?: number): string | undefined {
   if (!shadowPct) return undefined;
-  const blurPx = (shadowPct / 100) * 24;
-  const offsetPx = (shadowPct / 100) * 10;
+  const blurPx = ((blurPct ?? shadowPct) / 100) * 24;
+  const offsetPx = ((distancePct ?? shadowPct) / 100) * 10;
   const alpha = 0.15 + (shadowPct / 100) * 0.45;
   return `${offsetPx}px ${offsetPx}px ${blurPx}px rgba(0,0,0,${alpha})`;
 }
@@ -732,8 +860,14 @@ export function boxShadowFor(shadowPct: number | undefined): string | undefined 
 // An `outline` (even with a negative offset) gets silently clipped by this same element's own
 // overflow-hidden, so the border is folded into an inset box-shadow entry instead — box-shadow,
 // unlike outline, isn't subject to that clipping.
-export function combinedBoxShadowFor(shadowPct: number | undefined, borderWidthPx: number | undefined, borderColor: string | undefined): string | undefined {
-  const drop = boxShadowFor(shadowPct);
+export function combinedBoxShadowFor(
+  shadowPct: number | undefined,
+  borderWidthPx: number | undefined,
+  borderColor: string | undefined,
+  distancePct?: number,
+  blurPct?: number
+): string | undefined {
+  const drop = boxShadowFor(shadowPct, distancePct, blurPct);
   const border = borderWidthPx ? `inset 0 0 0 ${borderWidthPx}px ${borderColor ?? "#fff"}` : undefined;
   return [drop, border].filter(Boolean).join(", ") || undefined;
 }
@@ -1120,7 +1254,11 @@ export default function AlbumSpreadCanvasEditor({
   // Photo ids already placed elsewhere in the album (other pages) — badged with ✅ in every
   // picker below so the photographer doesn't accidentally place the same photo twice.
   usedElsewhere?: Set<string>;
-  onSave: (elements: AlbumElement[], background: { photoId: string | null; blur: number; opacity: number; zoom: number }) => void;
+  // void | Promise<void> (not just void) so callers that need to wait for the save to actually
+  // land — the exit-confirm dialog's "שמירה ויציאה" — can await it: handleSave in
+  // AlbumPageEditor.tsx is async and, on the web app, an earlier bug traced back to exactly this
+  // — a caller that didn't await it let its own follow-up action race the save's own side effects.
+  onSave: (elements: AlbumElement[], background: { photoId: string | null; blur: number; opacity: number; zoom: number }) => void | Promise<void>;
   onSaveTemplate: (name: string, frames: AlbumFrame[]) => Promise<void>;
   onClose: () => void;
   // Photographer-uploaded ornament tabs (desktop-only feature) — an empty/omitted list just means
@@ -1131,7 +1269,32 @@ export default function AlbumSpreadCanvasEditor({
   onUploadCustomOrnament?: (tabId: string, name: string, bytes: ArrayBuffer, contentType: string) => Promise<void>;
   onDeleteCustomOrnament?: (ornamentId: string) => Promise<void>;
 }) {
-  const [elements, setElements] = useState<AlbumElement[]>(() => (mode === "custom" ? seedElementsFromPreset(spread) : spread.elements));
+  const [elements, setElementsRaw] = useState<AlbumElement[]>(() => (mode === "custom" ? seedElementsFromPreset(spread) : spread.elements));
+  // Undo history — ported from the web app's own editor: up to 20 past snapshots of `elements`. A
+  // snapshot is recorded on every mutation EXCEPT while a move/resize drag is actively in progress
+  // (dragRef.current set) — a continuous drag fires this on every pointermove tick, and recording
+  // each tick would make one Cmd/Ctrl+Z barely move anything back. startDrag instead records a
+  // single snapshot up front, before the drag's own ticks begin, so one undo reverts the whole
+  // gesture at once. Every other mutation in this file is already a single setElements call per
+  // user action, so it naturally gets exactly one snapshot each.
+  const MAX_UNDO_HISTORY = 20;
+  const undoHistoryRef = useRef<AlbumElement[][]>([]);
+  const setElements = useCallback((update: React.SetStateAction<AlbumElement[]>) => {
+    setElementsRaw((prev) => {
+      if (!dragRef.current) {
+        undoHistoryRef.current = [...undoHistoryRef.current, prev].slice(-MAX_UNDO_HISTORY);
+      }
+      return typeof update === "function" ? (update as (p: AlbumElement[]) => AlbumElement[])(prev) : update;
+    });
+  }, []);
+  const undo = useCallback(() => {
+    setElementsRaw((prev) => {
+      const hist = undoHistoryRef.current;
+      if (hist.length === 0) return prev;
+      undoHistoryRef.current = hist.slice(0, -1);
+      return hist[hist.length - 1];
+    });
+  }, []);
   // Multiple photo elements can be selected at once (shift-click or a rubber-band marquee drag)
   // so circular-menu actions and resize can apply to the whole group; text elements stay
   // single-select only (a Set of size 1 for those).
@@ -1144,6 +1307,19 @@ export default function AlbumSpreadCanvasEditor({
   const [backgroundBlur, setBackgroundBlur] = useState(spread.background_blur);
   const [backgroundOpacity, setBackgroundOpacity] = useState(spread.background_opacity);
   const [backgroundZoom, setBackgroundZoom] = useState(spread.background_zoom ?? 100);
+  // Ported from the web app's own editor — snapshot of the page's saved state, captured once from
+  // the actual initial state values (not recomputed from spread/seedElementsFromPreset
+  // separately, which could disagree on seeded element ids and falsely read as "dirty" from the
+  // very first render). Used only to detect unsaved changes when the photographer clicks the X.
+  const initialSnapshotRef = useRef<string | null>(null);
+  if (initialSnapshotRef.current === null) {
+    initialSnapshotRef.current = JSON.stringify([elements, backgroundPhotoId, backgroundBlur, backgroundOpacity, backgroundZoom]);
+  }
+  const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
+  const [pendingLeaveAction, setPendingLeaveAction] = useState<(() => void) | null>(null);
+  const [skipExitConfirm, setSkipExitConfirm] = useState(
+    () => typeof window !== "undefined" && localStorage.getItem("albumEditorSkipExitConfirm") === "1"
+  );
   const [photoPickerOpen, setPhotoPickerOpen] = useState(false);
   // "+ תמונה" opens the picker in multi-select mode — pick any number of photos, and the system
   // builds a fresh orientation-aware layout for all of them at once (replacing the page's current
@@ -1389,16 +1565,21 @@ export default function AlbumSpreadCanvasEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedIds]);
 
-  // Ported from the web app's own editor: Cmd/Ctrl+A selects every photo/ornament/shape on the
-  // page (text stays single-select only, matching web's own comment on why); a bare T opens the
-  // add-text draft panel. All skipped while focus is inside a form field. Web's version also
-  // handles Cmd/Ctrl+Z for undo here — not ported, since undo itself isn't ported to desktop yet.
+  // Ported from the web app's own editor: Cmd/Ctrl+Z undoes the last change; Cmd/Ctrl+A selects
+  // every photo/ornament/shape on the page (text stays single-select only, matching web's own
+  // comment on why); a bare T opens the add-text draft panel. All skipped while focus is inside a
+  // form field.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const active = document.activeElement;
       const typing = active && (["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName) || (active as HTMLElement).isContentEditable);
       if (typing) return;
       const meta = e.metaKey || e.ctrlKey;
+      if (meta && !e.shiftKey && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        undo();
+        return;
+      }
       if (meta && e.key.toLowerCase() === "a") {
         e.preventDefault();
         setSelectedIds(new Set(elements.filter((el) => el.type === "photo" || el.type === "ornament" || el.type === "shape").map((el) => el.id)));
@@ -1411,7 +1592,7 @@ export default function AlbumSpreadCanvasEditor({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [elements]);
+  }, [elements, undo]);
 
   // "+ מסגרת" — inserts one empty, freely movable/resizable frame into the current layout without
   // touching any existing element, for a photographer who wants to hand-extend a template/auto
@@ -1575,9 +1756,9 @@ export default function AlbumSpreadCanvasEditor({
   const applyShadowToAllPhotos = (id: string) => {
     const source = elements.find((e) => e.id === id);
     if (!source || source.type !== "photo") return;
-    const { shadow, borderWidth, borderColor } = source;
+    const { shadow, shadowDistance, shadowBlur, borderWidth, borderColor } = source;
     setElements((prev) =>
-      prev.map((e) => (e.type === "photo" ? { ...e, shadow, borderWidth, borderColor } : e))
+      prev.map((e) => (e.type === "photo" ? { ...e, shadow, shadowDistance, shadowBlur, borderWidth, borderColor } : e))
     );
   };
 
@@ -1714,6 +1895,10 @@ export default function AlbumSpreadCanvasEditor({
   // resize handles don't know about selection state themselves.
   const startDrag = (e: React.PointerEvent, el: AlbumElement, kind: "move" | "resize", resizeHandle?: ResizeHandle, moveGroupIds?: string[]) => {
     e.stopPropagation();
+    // One undo snapshot for the whole upcoming gesture, taken before dragRef.current is set below
+    // — the wrapped setElements skips recording while dragRef.current is set, so without this the
+    // drag's own pointermove ticks would never get captured at all.
+    undoHistoryRef.current = [...undoHistoryRef.current, elements].slice(-MAX_UNDO_HISTORY);
     // Can throw in edge cases (pointer id no longer "active" by the time this runs, some
     // browsers on fast multi-touch sequences) — losing implicit capture just means a drag that
     // leaves the frame won't keep tracking, not a broken interaction, so it's not worth aborting
@@ -1900,6 +2085,31 @@ export default function AlbumSpreadCanvasEditor({
 
   const photoById = new Map(photos.map((p) => [p.id, p]));
 
+  // Ported from the web app's own editor — unsaved-changes gate for closing the editor. Web's
+  // version also gates a bottom page-switcher strip (onSwitchSpread) through this same function;
+  // that strip doesn't exist in desktop's editor (item 20, not ported), so only onClose is gated
+  // here. Also skips web's renderPreviewNow() call — that regenerates a cloud preview thumbnail
+  // used by the web app's own gallery list view, which has no desktop equivalent.
+  const isDirty = () => JSON.stringify([elements, backgroundPhotoId, backgroundBlur, backgroundOpacity, backgroundZoom]) !== initialSnapshotRef.current;
+
+  const requestLeave = async (action: () => void) => {
+    if (!isDirty()) {
+      action();
+      return;
+    }
+    if (skipExitConfirm) {
+      // onSave may be async (AlbumPageEditor.tsx's handleSave is) — awaiting it here ensures any
+      // of its own trailing state resets land BEFORE action() runs, not after.
+      await onSave(elements, { photoId: backgroundPhotoId, blur: backgroundBlur, opacity: backgroundOpacity, zoom: backgroundZoom });
+      action();
+      return;
+    }
+    setPendingLeaveAction(() => action);
+    setExitConfirmOpen(true);
+  };
+
+  const handleCloseAttempt = () => requestLeave(onClose);
+
   return (
     <div
       className={`fixed inset-0 z-[80] flex items-center justify-center p-4 ${ALBUM_FONT_CLASS_NAMES}`}
@@ -1957,7 +2167,7 @@ export default function AlbumSpreadCanvasEditor({
         <div className="lg:flex-1 lg:flex lg:flex-col lg:min-w-0 lg:min-h-0">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-base font-bold font-display">{mode === "custom" ? "עיצוב חופשי" : "הוספת טקסט לעמוד"}</h2>
-          <button onClick={onClose} className="h-8 w-8 rounded-full flex items-center justify-center bg-white border border-line">
+          <button onClick={handleCloseAttempt} className="h-8 w-8 rounded-full flex items-center justify-center bg-white border border-line">
             <IconClose />
           </button>
         </div>
@@ -2053,6 +2263,23 @@ export default function AlbumSpreadCanvasEditor({
             </div>
           )}
 
+          <svg width="0" height="0" style={{ position: "absolute" }} aria-hidden="true">
+            {/* One <defs> per photo, keyed by id — ported from the web app's own editor. So
+                dragging one photo's adjustment sliders only touches that photo's own filter DOM
+                node (React skips unchanged siblings), instead of re-parsing every adjusted
+                photo's filter on every tick. */}
+            {elements
+              .filter((el): el is AlbumPhotoElement => el.type === "photo" && hasAdjustments(el))
+              .map((el) => (
+                <defs key={el.id} dangerouslySetInnerHTML={{ __html: adjustmentsSvgFilter(el.id, el) }} />
+              ))}
+            {elements
+              .filter((el): el is AlbumPhotoElement => el.type === "photo" && !!el.sharpness)
+              .map((el) => (
+                <defs key={`sharpen-${el.id}`} dangerouslySetInnerHTML={{ __html: sharpenSvgFilter(el.id, el.sharpness) }} />
+              ))}
+          </svg>
+
           {elements
             .filter((el) => mode === "custom" || el.type === "text")
             .map((el) => {
@@ -2142,7 +2369,7 @@ export default function AlbumSpreadCanvasEditor({
                       // box-shadow (unlike outline, and unlike a filter on the img) isn't clipped
                       // by this div's own overflow-hidden — it's what lets the shadow bleed past
                       // the frame, and the border below folds into it for the same reason.
-                      boxShadow: combinedBoxShadowFor(el.shadow, el.borderWidth, el.borderColor),
+                      boxShadow: combinedBoxShadowFor(el.shadow, el.borderWidth, el.borderColor, el.shadowDistance, el.shadowBlur),
                       // Rotation lives on THIS element (not the <img>) so the outline and
                       // box-shadow — both decorations of this same box — rotate along with the
                       // clipped photo as one rigid tile, instead of only the image content
@@ -2158,7 +2385,7 @@ export default function AlbumSpreadCanvasEditor({
                         className="absolute inset-0 w-full h-full object-cover pointer-events-none"
                         style={{
                           objectPosition: `${el.focalX}% ${el.focalY}%`,
-                          filter: cssFilterFor(el.filter, el.blur),
+                          filter: cssFilterFor(el.filter, el.blur, { id: el.id, adj: el }, el.sharpness),
                           opacity: (el.opacity ?? 100) / 100,
                           // Zoom is a crop-level operation (how much of the image shows inside the
                           // already-fixed, already-rotated frame) so it stays on the image itself,
@@ -3171,6 +3398,78 @@ export default function AlbumSpreadCanvasEditor({
             >
               {savingTemplate ? "שומר..." : "שמירה בספריית התבניות"}
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Unsaved-changes gate — ported from the web app's own editor (see handleCloseAttempt). */}
+      {exitConfirmOpen && (
+        <div
+          className="fixed inset-0 z-[96] flex items-center justify-center p-4"
+          style={{ background: "rgba(46,49,66,0.55)" }}
+          onClick={() => {
+            setExitConfirmOpen(false);
+            setPendingLeaveAction(null);
+          }}
+        >
+          <div className="w-full max-w-sm rounded-3xl p-5 bg-paper shadow-sheet" onClick={(e) => e.stopPropagation()}>
+            <h2 className="text-base font-bold font-display mb-2">השינויים בעמוד לא נשמרו</h2>
+            <p className="text-sm text-ink-soft leading-relaxed mb-4">לשמור אותם עכשיו, או לצאת בלי לשמור?</p>
+
+            <div className="flex items-center justify-between gap-3 rounded-xl px-3.5 py-3 bg-chip mb-4">
+              <span className="text-xs text-ink-soft leading-relaxed flex-1">
+                אל תציג לי את החלון הזה שוב — תמיד שמור אוטומטית ביציאה
+              </span>
+              <button
+                onClick={() => {
+                  const next = !skipExitConfirm;
+                  setSkipExitConfirm(next);
+                  localStorage.setItem("albumEditorSkipExitConfirm", next ? "1" : "0");
+                }}
+                role="switch"
+                aria-checked={skipExitConfirm}
+                className="relative h-6 w-11 shrink-0 rounded-full flex items-center px-0.5"
+                style={{
+                  background: skipExitConfirm ? "var(--color-amber-deep)" : "var(--color-line)",
+                  justifyContent: skipExitConfirm ? "flex-start" : "flex-end",
+                }}
+              >
+                <span className="h-5 w-5 rounded-full shadow" style={{ background: "#fff" }} />
+              </button>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={async () => {
+                  await onSave(elements, { photoId: backgroundPhotoId, blur: backgroundBlur, opacity: backgroundOpacity, zoom: backgroundZoom });
+                  setExitConfirmOpen(false);
+                  pendingLeaveAction?.();
+                  setPendingLeaveAction(null);
+                }}
+                className="w-full rounded-lg py-2.5 text-sm font-semibold bg-ink text-white"
+              >
+                שמירה ויציאה
+              </button>
+              <button
+                onClick={() => {
+                  setExitConfirmOpen(false);
+                  pendingLeaveAction?.();
+                  setPendingLeaveAction(null);
+                }}
+                className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-rose"
+              >
+                יציאה בלי שמירה
+              </button>
+              <button
+                onClick={() => {
+                  setExitConfirmOpen(false);
+                  setPendingLeaveAction(null);
+                }}
+                className="w-full rounded-lg py-2 text-xs font-semibold text-ink-soft"
+              >
+                ביטול, המשך לעריכה
+              </button>
+            </div>
           </div>
         </div>
       )}
