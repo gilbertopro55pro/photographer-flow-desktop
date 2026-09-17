@@ -1,0 +1,155 @@
+/* Generated from photographer-flow (web app)'s src/assets/fonts + albumFontFiles.ts —
+   plain global @font-face rules (no next/font) so album text elements render with the same
+   faces the web editor and PSD/PDF export use. */
+
+@font-face {
+  font-family: "AF-heebo";
+  src: url("/fonts/Heebo-Hebrew-Bold.ttf") format("truetype");
+  font-weight: 400 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "AF-rubik";
+  src: url("/fonts/Rubik-Hebrew.ttf") format("truetype");
+  font-weight: 400 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "AF-assistant";
+  src: url("/fonts/Assistant-Hebrew.ttf") format("truetype");
+  font-weight: 400 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "AF-frank-ruhl-libre";
+  src: url("/fonts/FrankRuhlLibre-Hebrew.ttf") format("truetype");
+  font-weight: 400 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "AF-david-libre";
+  src: url("/fonts/DavidLibre-Hebrew.ttf") format("truetype");
+  font-weight: 400 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "AF-secular-one";
+  src: url("/fonts/SecularOne-Hebrew.ttf") format("truetype");
+  font-weight: 400 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "AF-suez-one";
+  src: url("/fonts/SuezOne-Hebrew.ttf") format("truetype");
+  font-weight: 400 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "AF-alef";
+  src: url("/fonts/Alef-Hebrew.ttf") format("truetype");
+  font-weight: 400 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "AF-miriam-libre";
+  src: url("/fonts/MiriamLibre-Hebrew.ttf") format("truetype");
+  font-weight: 400 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "AF-noto-sans-hebrew";
+  src: url("/fonts/NotoSansHebrew-Hebrew.ttf") format("truetype");
+  font-weight: 400 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "AF-montserrat";
+  src: url("/fonts/Montserrat-Latin.ttf") format("truetype");
+  font-weight: 400 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "AF-playfair-display";
+  src: url("/fonts/PlayfairDisplay-Latin.ttf") format("truetype");
+  font-weight: 400 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "AF-lora";
+  src: url("/fonts/Lora-Latin.ttf") format("truetype");
+  font-weight: 400 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "AF-poppins";
+  src: url("/fonts/Poppins-Latin.ttf") format("truetype");
+  font-weight: 400 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "AF-merriweather";
+  src: url("/fonts/Merriweather-Latin.ttf") format("truetype");
+  font-weight: 400 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "AF-dancing-script";
+  src: url("/fonts/DancingScript-Latin.ttf") format("truetype");
+  font-weight: 400 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "AF-great-vibes";
+  src: url("/fonts/GreatVibes-Latin.ttf") format("truetype");
+  font-weight: 400 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "AF-pacifico";
+  src: url("/fonts/Pacifico-Latin.ttf") format("truetype");
+  font-weight: 400 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "AF-caveat";
+  src: url("/fonts/Caveat-Latin.ttf") format("truetype");
+  font-weight: 400 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "AF-sacramento";
+  src: url("/fonts/Sacramento-Latin.ttf") format("truetype");
+  font-weight: 400 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "AF-heebo-hebrew-fallback";
+  src: url("/fonts/Heebo-Hebrew-Bold.ttf") format("truetype");
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "AF-heebo-latin-fallback";
+  src: url("/fonts/Heebo-Latin-Bold.ttf") format("truetype");
+  font-display: swap;
+}

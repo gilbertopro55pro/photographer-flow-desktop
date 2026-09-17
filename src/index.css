@@ -1,0 +1,68 @@
+@import "tailwindcss";
+@import "./albumFonts.css";
+
+:root {
+  --color-ink: #2E3142;
+  --color-ink-soft: #6B6E80;
+  --color-paper: #FBFAF7;
+  --color-card: #FFFFFF;
+  --color-chip: #F5F3EE;
+  --color-chip-tint: #FBF3E4;
+  --color-line: #E7E4DC;
+  --color-amber: #C9772E;
+  --color-amber-deep: #C9772E;
+  --color-amber-bg: #FBF0E3;
+  --color-rose: #C0574B;
+  --color-sage: #3F6B52;
+  --color-sage-bg: #E9F3EC;
+  --color-input-bg: #FFFFFF;
+  --shadow-card: 0 1px 1px rgba(46,49,66,0.04), 0 10px 28px rgba(46,49,66,0.08);
+  --shadow-sheet: 0 4px 16px rgba(46,49,66,0.10), 0 24px 56px rgba(46,49,66,0.16);
+  color-scheme: light;
+}
+
+/* Ties Tailwind's utility classes (bg-paper, text-ink-soft, shadow-sheet, font-display, ...) to
+   the tokens above — same pattern as the web app's globals.css, so AlbumSpreadCanvasEditor.tsx's
+   className strings resolve unchanged. */
+@theme inline {
+  --color-paper: var(--color-paper);
+  --color-ink: var(--color-ink);
+  --color-ink-soft: var(--color-ink-soft);
+  --color-amber: var(--color-amber);
+  --color-amber-deep: var(--color-amber-deep);
+  --color-amber-bg: var(--color-amber-bg);
+  --color-sage: var(--color-sage);
+  --color-sage-bg: var(--color-sage-bg);
+  --color-rose: var(--color-rose);
+  --color-line: var(--color-line);
+  --color-card: var(--color-card);
+  --color-chip: var(--color-chip);
+  --color-chip-tint: var(--color-chip-tint);
+
+  --font-display: "AF-heebo", sans-serif;
+  --font-sans: "AF-heebo", sans-serif;
+  --font-data: ui-monospace, "SF Mono", Menlo, monospace;
+
+  --shadow-card: var(--shadow-card);
+  --shadow-sheet: var(--shadow-sheet);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+  background: var(--color-paper);
+  color: var(--color-ink);
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
