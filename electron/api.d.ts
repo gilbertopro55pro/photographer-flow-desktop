@@ -67,6 +67,10 @@ type AlbumShapeElementInput = {
   rotation?: number;
   opacity?: number;
   maskId?: string;
+  shadow?: number;
+  borderWidth?: number;
+  borderColor?: string;
+  shapeStyle?: "rect-outline" | "circle-outline" | "line";
 };
 type AlbumPageElementInput = AlbumPhotoElementInput | AlbumTextElementInput | AlbumOrnamentElementInput | AlbumShapeElementInput;
 type AlbumPageBackgroundInput = { imageBytes: number[]; blur: number; opacity: number; zoom?: number } | null;

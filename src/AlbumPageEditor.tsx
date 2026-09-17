@@ -242,6 +242,10 @@ export default function AlbumPageEditor({
               rotation: el.rotation,
               opacity: el.opacity,
               maskId: el.maskId,
+              shadow: el.shadow,
+              borderWidth: el.borderWidth,
+              borderColor: el.borderColor,
+              shapeStyle: el.shapeStyle,
             };
           }
           if (!el.photoId) return null;

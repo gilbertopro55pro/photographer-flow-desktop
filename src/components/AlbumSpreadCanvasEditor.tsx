@@ -14,6 +14,7 @@ import { sharpenFilterId, sharpenSvgFilter } from "@/lib/albumSharpen";
 type PhotoWithUrl = { id: string; url: string; is_favorite?: boolean; folder_id?: string | null; original_filename?: string; created_at?: string };
 
 const BORDER_COLORS = ["#ffffff", "#000000", "#d4af37", "#e07a5f"];
+const PX_PER_CM = 96 / 2.54;
 // A shared cap so a given blur % looks (and exports) the same whether it's applied to a framed
 // photo or the full-page background — also the sigma sharp/PDF baking uses server-side, since
 // CSS blur(px) and sharp's Gaussian blur sigma are both "pixels of std-deviation" and line up
@@ -156,6 +157,15 @@ function IconTrash() {
     <MenuIconBase>
       <path d="M4.5 7h15M9.5 7V4.8a1 1 0 011-1h3a1 1 0 011 1V7m-8 0l.8 12.2a1.5 1.5 0 001.5 1.4h5.4a1.5 1.5 0 001.5-1.4L18.5 7" />
       <path d="M10 11v6M14 11v6" />
+    </MenuIconBase>
+  );
+}
+function IconLock() {
+  return (
+    <MenuIconBase>
+      <rect x={5.5} y={10.5} width={13} height={9} rx={1.5} />
+      <path d="M8.5 10.5V7.5a3.5 3.5 0 017 0v3" />
+      <circle cx={12} cy={14.5} r={1.3} fill="currentColor" stroke="none" />
     </MenuIconBase>
   );
 }
@@ -411,6 +421,13 @@ function PhotoFloatingMenu({
       >
         <IconAspectLock />
       </CircleButton>
+      <CircleButton
+        label={el.locked ? "נעולה — לחצו לשחרור המיקום והגודל" : "נעילת מיקום וגודל"}
+        active={!!el.locked}
+        onClick={() => onUpdate({ locked: !el.locked })}
+      >
+        <IconLock />
+      </CircleButton>
       <div className="relative">
         <CircleButton label="שקיפות" active={openPanel === "opacity" || (el.opacity ?? 100) < 100} onClick={() => toggle("opacity")}>
           <IconOpacity />
@@ -628,6 +645,14 @@ function OrnamentFloatingMenu({
         <button onClick={onSendToBack} title="אחורה — לשכבה התחתונה" className="flex-1 h-7 rounded-lg bg-chip flex items-center justify-center text-ink-soft">
           <IconToBack />
         </button>
+        <button
+          onClick={() => onUpdate({ locked: !el.locked })}
+          title={el.locked ? "נעול — לחצו לשחרור" : "נעילת מיקום וגודל"}
+          className="flex-1 h-7 rounded-lg flex items-center justify-center"
+          style={{ background: el.locked ? "var(--color-amber-deep)" : "var(--color-chip)", color: el.locked ? "#fff" : "var(--color-ink-soft)" }}
+        >
+          <IconLock />
+        </button>
         <button onClick={onDeleteSelected} title="מחיקה" className="flex-1 h-7 rounded-lg bg-chip flex items-center justify-center text-rose">
           <IconTrash />
         </button>
@@ -641,6 +666,7 @@ function OrnamentFloatingMenu({
 // anchored to this button, sharing that same panel/state with the photo/sidebar entry points).
 function ShapeFloatingMenu({
   el,
+  albumHeightCm,
   onUpdate,
   onDeleteSelected,
   onBringToFront,
@@ -648,6 +674,7 @@ function ShapeFloatingMenu({
   onOpenMasksPicker,
 }: {
   el: AlbumShapeElement;
+  albumHeightCm: number;
   onUpdate: (patch: Partial<AlbumShapeElement>) => void;
   onDeleteSelected: () => void;
   onBringToFront: () => void;
@@ -656,6 +683,8 @@ function ShapeFloatingMenu({
 }) {
   const onLeft = el.xPct + el.widthPct > 70;
   const maskButtonRef = useRef<HTMLButtonElement>(null);
+  const isLine = el.shapeStyle === "line";
+  const linePx = Math.max(1, Math.min(100, Math.round((el.heightPct / 100) * albumHeightCm * PX_PER_CM)));
   return (
     <div
       className="absolute z-20 rounded-xl border border-line bg-white p-2.5 shadow-sheet space-y-2"
@@ -692,13 +721,52 @@ function ShapeFloatingMenu({
         <IconMask size={12} />
         {el.maskId ? "שינוי מסכה" : "החלת מסכה"}
       </button>
+      {isLine && (
+        <MiniSlider
+          label="עובי הקו"
+          value={linePx}
+          min={1}
+          max={100}
+          unit="px"
+          onChange={(px) => {
+            // Keeps the line's vertical center fixed while its thickness (heightPct) changes — same
+            // recentering the resize handles already do — so nudging this slider doesn't also
+            // silently drift the line's position.
+            const newHeightPct = albumHeightCm > 0 ? (px / PX_PER_CM / albumHeightCm) * 100 : el.heightPct;
+            const centerY = el.yPct + el.heightPct / 2;
+            onUpdate({ heightPct: newHeightPct, yPct: centerY - newHeightPct / 2 });
+          }}
+        />
+      )}
       <MiniSlider label="שקיפות" value={el.opacity ?? 100} min={0} max={100} unit="%" onChange={(v) => onUpdate({ opacity: v })} />
+      <MiniSlider label="עוצמת צל" value={el.shadow ?? 0} min={0} max={100} unit="%" onChange={(v) => onUpdate({ shadow: v })} />
+      <MiniSlider label="קו מתאר" value={el.borderWidth ?? 0} min={0} max={50} unit="px" onChange={(v) => onUpdate({ borderWidth: v })} />
+      {!!el.borderWidth && (
+        <div className="flex items-center gap-1.5">
+          {BORDER_COLORS.map((c) => (
+            <button
+              key={c}
+              onClick={() => onUpdate({ borderColor: c })}
+              className="h-5 w-5 rounded-full"
+              style={{ background: c, boxShadow: (el.borderColor ?? "#ffffff") === c ? "0 0 0 2px var(--color-amber-deep)" : "0 0 0 1px var(--color-line)" }}
+            />
+          ))}
+        </div>
+      )}
       <div className="flex items-center gap-1">
         <button onClick={onBringToFront} title="קדימה — לשכבה העליונה" className="flex-1 h-7 rounded-lg bg-chip flex items-center justify-center text-ink-soft">
           <IconToFront />
         </button>
         <button onClick={onSendToBack} title="אחורה — לשכבה התחתונה" className="flex-1 h-7 rounded-lg bg-chip flex items-center justify-center text-ink-soft">
           <IconToBack />
+        </button>
+        <button
+          onClick={() => onUpdate({ locked: !el.locked })}
+          title={el.locked ? "נעול — לחצו לשחרור" : "נעילת מיקום וגודל"}
+          className="flex-1 h-7 rounded-lg flex items-center justify-center"
+          style={{ background: el.locked ? "var(--color-amber-deep)" : "var(--color-chip)", color: el.locked ? "#fff" : "var(--color-ink-soft)" }}
+        >
+          <IconLock />
         </button>
         <button onClick={onDeleteSelected} title="מחיקה" className="flex-1 h-7 rounded-lg bg-chip flex items-center justify-center text-rose">
           <IconTrash />
@@ -797,9 +865,18 @@ function TextFloatingMenu({
           onUpdate({ fontSize: v, heightPct: Math.min(Math.max(el.heightPct ?? 0, natural), natural * MAX_TEXT_HEIGHT_OVERSIZE_RATIO) });
         }}
       />
-      <button onClick={onDeleteSelected} className="w-full h-7 rounded-lg bg-chip text-rose text-[10px] font-semibold">
-        מחיקה
-      </button>
+      <div className="flex items-center gap-1">
+        <button
+          onClick={() => onUpdate({ locked: !el.locked })}
+          className="flex-1 h-7 rounded-lg text-[10px] font-semibold"
+          style={{ background: el.locked ? "var(--color-amber-deep)" : "var(--color-chip)", color: el.locked ? "#fff" : "var(--color-ink-soft)" }}
+        >
+          {el.locked ? "נעול" : "נעילה"}
+        </button>
+        <button onClick={onDeleteSelected} className="flex-1 h-7 rounded-lg bg-chip text-rose text-[10px] font-semibold">
+          מחיקה
+        </button>
+      </div>
     </div>
   );
 }
@@ -885,6 +962,11 @@ function computeResize(
   dxPct: number,
   dyPct: number,
   lockAspect: boolean,
+  // Outline-only shapes (rect-outline/circle-outline/line) are explicitly allowed to be dragged
+  // past the page's own edges — they're stroke/line decorations that photographers sometimes want
+  // to bleed off the page on purpose, unlike a photo or a filled shape where that would just be a
+  // mistake. Skips the 0..100 clamp entirely for these; MIN_W/MIN_H still apply either way.
+  allowOverflow = false,
   // Alt-held resize — ported from the web app's own editor: grows/shrinks symmetrically from the
   // element's own ORIGINAL center on whichever axis is being dragged, instead of the normal
   // "opposite edge stays fixed" behavior. Doubling the delta on that axis while re-centering on
@@ -927,6 +1009,10 @@ function computeResize(
   } else {
     newLeft = h === "w" ? start.xPct + start.widthPct - newWidth : start.xPct;
     newTop = v === "n" ? start.yPct + start.heightPct - newHeight : start.yPct;
+  }
+
+  if (allowOverflow) {
+    return { xPct: newLeft, yPct: newTop, widthPct: newWidth, heightPct: newHeight };
   }
 
   const clampedLeft = Math.max(0, Math.min(newLeft, 100 - newWidth));
@@ -1507,7 +1593,11 @@ export default function AlbumSpreadCanvasEditor({
       const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
       const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
       setElements((prev) =>
-        prev.map((el) => (selectedIds.has(el.id) ? { ...el, xPct: Math.max(0, Math.min(95, el.xPct + dx)), yPct: Math.max(0, Math.min(95, el.yPct + dy)) } : el))
+        prev.map((el) =>
+          selectedIds.has(el.id) && !el.locked
+            ? { ...el, xPct: Math.max(0, Math.min(95, el.xPct + dx)), yPct: Math.max(0, Math.min(95, el.yPct + dy)) }
+            : el
+        )
       );
     };
     window.addEventListener("keydown", handler);
@@ -1667,6 +1757,42 @@ export default function AlbumSpreadCanvasEditor({
     const xPct = at ? Math.max(0, Math.min(100 - widthPct, at.xPct - widthPct / 2)) : 37.5;
     const yPct = at ? Math.max(0, Math.min(100 - heightPct, at.yPct - heightPct / 2)) : 37.5;
     setElements((prev) => [...prev, { id, type: "shape", maskId, xPct, yPct, widthPct, heightPct, color: "#2e3142", rotation: 0, opacity: 100 }]);
+    setSelectedIds(new Set([id]));
+    closeShapesPicker();
+  };
+
+  // Outline-only presets — square/rectangle share the same rect-stroke rendering and differ only
+  // in their default aspect ratio; "line" stays a plain solid fill (just very thin) but still gets
+  // its own shapeStyle tag so the floating menu can show it a dedicated thickness slider and the
+  // resize handles can let it (like the two true outline kinds) extend past the page edge.
+  const addOutlineShape = (kind: "square" | "rectangle" | "circle" | "line", at?: { xPct: number; yPct: number }) => {
+    const id = `shape-${Date.now()}`;
+    let widthPct = 24;
+    let heightPct = 24;
+    let shapeStyle: AlbumShapeElement["shapeStyle"];
+    let borderWidth: number | undefined;
+    if (kind === "square") {
+      shapeStyle = "rect-outline";
+      borderWidth = 5;
+    } else if (kind === "rectangle") {
+      widthPct = 32;
+      heightPct = 20;
+      shapeStyle = "rect-outline";
+      borderWidth = 5;
+    } else if (kind === "circle") {
+      shapeStyle = "circle-outline";
+      borderWidth = 5;
+    } else {
+      widthPct = 35;
+      heightPct = 1.2;
+      shapeStyle = "line";
+    }
+    const xPct = at ? Math.max(0, Math.min(100 - widthPct, at.xPct - widthPct / 2)) : 37.5;
+    const yPct = at ? Math.max(0, Math.min(100 - heightPct, at.yPct - heightPct / 2)) : 37.5;
+    setElements((prev) => [
+      ...prev,
+      { id, type: "shape", shapeStyle, xPct, yPct, widthPct, heightPct, color: "#2e3142", rotation: 0, opacity: 100, borderWidth },
+    ]);
     setSelectedIds(new Set([id]));
     closeShapesPicker();
   };
@@ -1894,6 +2020,9 @@ export default function AlbumSpreadCanvasEditor({
   // grabbing one handle scales the whole selection), computed here rather than passed in since
   // resize handles don't know about selection state themselves.
   const startDrag = (e: React.PointerEvent, el: AlbumElement, kind: "move" | "resize", resizeHandle?: ResizeHandle, moveGroupIds?: string[]) => {
+    // Never drag FROM a locked element — still selectable (handled elsewhere), so the photographer
+    // can still reach its own menu to unlock it.
+    if (el.locked) return;
     e.stopPropagation();
     // One undo snapshot for the whole upcoming gesture, taken before dragRef.current is set below
     // — the wrapped setElements skips recording while dragRef.current is set, so without this the
@@ -1908,8 +2037,11 @@ export default function AlbumSpreadCanvasEditor({
     } catch {
       // ignored — see above
     }
-    const groupIds =
+    const rawGroupIds =
       kind === "resize" ? (selectedPhotos.length > 1 && selectedIds.has(el.id) ? selectedPhotos.map((p) => p.id) : [el.id]) : moveGroupIds ?? [el.id];
+    // Locked elements are excluded from the group entirely, even when part of the current
+    // multi-selection — `el` itself already passed the guard above, so it's always kept.
+    const groupIds = rawGroupIds.filter((id) => id === el.id || !elements.find((x) => x.id === id)?.locked);
     const groupStart: Record<string, { xPct: number; yPct: number; widthPct: number; heightPct: number }> = {};
     for (const id of groupIds) {
       const ge = elements.find((x) => x.id === id);
@@ -1959,8 +2091,9 @@ export default function AlbumSpreadCanvasEditor({
 
     if (drag.kind === "resize") {
       const lockAspect = el?.type === "photo" && !!el.lockAspect;
+      const allowOverflow = el?.type === "shape" && (el.shapeStyle === "rect-outline" || el.shapeStyle === "circle-outline" || el.shapeStyle === "line");
       const handle = drag.resizeHandle ?? "se";
-      let primaryResult = computeResize(handle, primaryStart, dxPct, dyPct, lockAspect, e.altKey);
+      let primaryResult = computeResize(handle, primaryStart, dxPct, dyPct, lockAspect, allowOverflow, e.altKey);
       const isSingleResize = Object.keys(drag.groupStart).length === 1;
       if (isSingleResize) {
         // Only a single-frame resize gets edge guides — a group resize already has its own
@@ -2204,6 +2337,7 @@ export default function AlbumSpreadCanvasEditor({
             const xPct = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
             const yPct = Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100));
             if (dropped.startsWith("customOrnament:")) addCustomOrnament(dropped.slice(15), { xPct, yPct });
+            else if (dropped.startsWith("shapeOutline:")) addOutlineShape(dropped.slice(13) as "square" | "rectangle" | "circle" | "line", { xPct, yPct });
             else if (dropped.startsWith("shape:")) addShape(dropped.slice(6) === "__plain__" ? undefined : dropped.slice(6), { xPct, yPct });
             else addOrnament(dropped.slice(9), { xPct, yPct });
           }}
@@ -2415,7 +2549,7 @@ export default function AlbumSpreadCanvasEditor({
                         +
                       </span>
                     )}
-                    {isSelected && renderResizeHandles(el, startDrag)}
+                    {isSelected && !el.locked && renderResizeHandles(el, startDrag)}
                   </div>
                 );
               }
@@ -2467,12 +2601,13 @@ export default function AlbumSpreadCanvasEditor({
                         // eslint-disable-next-line jsx-a11y/alt-text
                         <img src={imgSrc} draggable={false} className="w-full h-full pointer-events-none" style={{ objectFit: "contain" }} />
                       ))}
-                    {isSelected && renderResizeHandles(el, startDrag)}
+                    {isSelected && !el.locked && renderResizeHandles(el, startDrag)}
                   </div>
                 );
               }
               if (el.type === "shape") {
                 const mask = el.maskId ? findMask(el.maskId) : undefined;
+                const isOutline = el.shapeStyle === "rect-outline" || el.shapeStyle === "circle-outline";
                 return (
                   <div
                     key={el.id}
@@ -2501,26 +2636,40 @@ export default function AlbumSpreadCanvasEditor({
                       height: `${el.heightPct}%`,
                       opacity: (el.opacity ?? 100) / 100,
                       transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
-                      outline: isSelected ? "2px dashed var(--color-amber-deep)" : "none",
+                      borderRadius: el.shapeStyle === "circle-outline" ? "50%" : undefined,
+                      border: isOutline ? `${el.borderWidth ?? 5}px solid ${el.borderColor ?? el.color}` : undefined,
+                      outline: isOutline
+                        ? isSelected
+                          ? "2px dashed var(--color-amber-deep)"
+                          : "none"
+                        : el.borderWidth
+                        ? `${el.borderWidth}px solid ${el.borderColor ?? "#fff"}`
+                        : isSelected
+                        ? "2px dashed var(--color-amber-deep)"
+                        : "none",
+                      outlineOffset: isOutline ? "2px" : el.borderWidth ? `-${el.borderWidth}px` : undefined,
+                      boxShadow: boxShadowFor(el.shadow),
                     }}
                   >
-                    <div
-                      className="w-full h-full pointer-events-none"
-                      style={{
-                        backgroundColor: el.color,
-                        ...(mask
-                          ? {
-                              WebkitMaskImage: maskCssUrl(mask.svg),
-                              maskImage: maskCssUrl(mask.svg),
-                              WebkitMaskSize: "100% 100%",
-                              maskSize: "100% 100%",
-                              WebkitMaskRepeat: "no-repeat",
-                              maskRepeat: "no-repeat",
-                            }
-                          : null),
-                      }}
-                    />
-                    {isSelected && renderResizeHandles(el, startDrag)}
+                    {!isOutline && (
+                      <div
+                        className="w-full h-full pointer-events-none"
+                        style={{
+                          backgroundColor: el.color,
+                          ...(mask
+                            ? {
+                                WebkitMaskImage: maskCssUrl(mask.svg),
+                                maskImage: maskCssUrl(mask.svg),
+                                WebkitMaskSize: "100% 100%",
+                                maskSize: "100% 100%",
+                                WebkitMaskRepeat: "no-repeat",
+                                maskRepeat: "no-repeat",
+                              }
+                            : null),
+                        }}
+                      />
+                    )}
+                    {isSelected && !el.locked && renderResizeHandles(el, startDrag)}
                   </div>
                 );
               }
@@ -2658,6 +2807,7 @@ export default function AlbumSpreadCanvasEditor({
         {selectedShape && (
           <ShapeFloatingMenu
             el={selectedShape}
+            albumHeightCm={album.height_cm}
             onUpdate={(patch) => updateElement(selectedShape.id, patch)}
             onDeleteSelected={removeSelected}
             onBringToFront={() => bringToFront(selectedShape.id)}
@@ -3332,6 +3482,37 @@ export default function AlbumSpreadCanvasEditor({
                     }}
                   />
                   <span className="text-[10px] font-semibold">{mask.label}</span>
+                </button>
+              ))}
+            </div>
+            <p className="text-[10px] font-semibold text-ink-soft mt-3 mb-2">קו מתאר בלבד, ללא רקע</p>
+            <div className="grid grid-cols-3 gap-2.5">
+              {(
+                [
+                  { kind: "square", label: "ריבוע" },
+                  { kind: "rectangle", label: "מלבן" },
+                  { kind: "circle", label: "עיגול" },
+                  { kind: "line", label: "קו" },
+                ] as const
+              ).map(({ kind, label }) => (
+                <button
+                  key={kind}
+                  draggable
+                  onDragStart={(e) => e.dataTransfer.setData("text/plain", `shapeOutline:${kind}`)}
+                  onClick={() => addOutlineShape(kind)}
+                  className="rounded-xl border border-line p-2 text-center bg-white cursor-grab active:cursor-grabbing"
+                >
+                  <div className="aspect-square rounded-md mb-1.5 flex items-center justify-center">
+                    {kind === "line" ? (
+                      <div className="w-4/5 h-[3px] rounded-full" style={{ background: "var(--color-ink)" }} />
+                    ) : (
+                      <div
+                        className={kind === "square" ? "w-3/5 h-3/5" : kind === "rectangle" ? "w-4/5 h-1/2" : "w-3/5 h-3/5 rounded-full"}
+                        style={{ border: "3px solid var(--color-ink)" }}
+                      />
+                    )}
+                  </div>
+                  <span className="text-[10px] font-semibold">{label}</span>
                 </button>
               ))}
             </div>

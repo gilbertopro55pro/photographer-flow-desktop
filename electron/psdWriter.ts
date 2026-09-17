@@ -250,15 +250,47 @@ async function applyMaskToRaw(data: Buffer, width: number, height: number, maskI
 
 // A geometric shape is a plain solid-color rectangle, optionally clipped by one of the same
 // ALBUM_MASKS outlines used on photos (applyMaskToRaw above) and rotated as a whole — mirrors the
-// live canvas/preview's CSS mask-image + background-color rendering.
-async function composeShapeTile(width: number, height: number, color: string, maskId?: string, rotationDeg?: number): Promise<{ data: Buffer; width: number; height: number; left: number; top: number }> {
-  const { r, g, b } = hexToRgb(color);
-  const fill = solidFill(width, height, r, g, b, 255);
-  let data: Buffer = Buffer.from(fill.data);
+// live canvas/preview's CSS mask-image + background-color rendering. "line" is intentionally
+// accepted in extra.shapeStyle but not treated as isOutline below — it's still a solid fill, just a
+// thin one; only the two true outline kinds skip the fill entirely.
+async function composeShapeTile(
+  width: number,
+  height: number,
+  color: string,
+  maskId?: string,
+  rotationDeg?: number,
+  extra?: { borderWidth?: number; borderColor?: string; shapeStyle?: "rect-outline" | "circle-outline" | "line" }
+): Promise<{ data: Buffer; width: number; height: number; left: number; top: number }> {
+  const isOutline = extra?.shapeStyle === "rect-outline" || extra?.shapeStyle === "circle-outline";
+  let data: Buffer;
   let w = width;
   let h = height;
-  if (maskId) {
-    data = await applyMaskToRaw(data, w, h, maskId);
+  if (isOutline) {
+    // No fill at all — borderWidth/borderColor double as the stroke's own width/color rather than a
+    // decorative extra border on top of a fill, so this renders straight to a stroked, transparent
+    // canvas instead of going through solidFill + applyMaskToRaw.
+    const strokeWidth = extra?.borderWidth ?? 5;
+    const strokeColor = extra?.borderColor ?? color;
+    const shapeSvg =
+      extra?.shapeStyle === "circle-outline"
+        ? `<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg"><ellipse cx="${w / 2}" cy="${h / 2}" rx="${Math.max(0, w / 2 - strokeWidth / 2)}" ry="${Math.max(0, h / 2 - strokeWidth / 2)}" fill="none" stroke="${strokeColor}" stroke-width="${strokeWidth}"/></svg>`
+        : `<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg"><rect x="${strokeWidth / 2}" y="${strokeWidth / 2}" width="${Math.max(0, w - strokeWidth)}" height="${Math.max(0, h - strokeWidth)}" fill="none" stroke="${strokeColor}" stroke-width="${strokeWidth}"/></svg>`;
+    data = await sharp(Buffer.from(shapeSvg)).ensureAlpha().raw().toBuffer();
+  } else {
+    const { r, g, b } = hexToRgb(color);
+    const fill = solidFill(width, height, r, g, b, 255);
+    data = Buffer.from(fill.data);
+    if (maskId) {
+      data = await applyMaskToRaw(data, w, h, maskId);
+    }
+    if (extra?.borderWidth) {
+      const strokeSvg = `<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg"><rect x="${extra.borderWidth / 2}" y="${extra.borderWidth / 2}" width="${w - extra.borderWidth}" height="${h - extra.borderWidth}" fill="none" stroke="${extra.borderColor ?? "#ffffff"}" stroke-width="${extra.borderWidth}"/></svg>`;
+      data = await sharp(data, { raw: { width: w, height: h, channels: 4 } })
+        .composite([{ input: Buffer.from(strokeSvg) }])
+        .ensureAlpha()
+        .raw()
+        .toBuffer();
+    }
   }
   let left = 0;
   let top = 0;
@@ -500,6 +532,10 @@ export type ExportShapeElement = {
   rotation?: number;
   opacity?: number;
   maskId?: string;
+  shadow?: number;
+  borderWidth?: number;
+  borderColor?: string;
+  shapeStyle?: "rect-outline" | "circle-outline" | "line";
 };
 export type ExportElement = ExportPhotoElement | ExportTextElement | ExportOrnamentElement | ExportShapeElement;
 export type ExportBackground = { imageBytes: Uint8Array; blur: number; opacity: number; zoom?: number } | null;
@@ -606,9 +642,25 @@ export async function writeAlbumPagePsd(savePath: string, widthPx: number, heigh
       const h = Math.max(1, Math.round(el.hPx));
       const frameTop = Math.round(el.yPx);
       const frameLeft = Math.round(el.xPx);
-      const tile = await composeShapeTile(w, h, el.color, el.maskId, el.rotation);
+      const tile = await composeShapeTile(w, h, el.color, el.maskId, el.rotation, {
+        borderWidth: el.borderWidth,
+        borderColor: el.borderColor,
+        shapeStyle: el.shapeStyle,
+      });
       const top = Math.round(frameTop + tile.top);
       const left = Math.round(frameLeft + tile.left);
+      const shapeShadow = await shadowLayerPng(w, h, el.shadow, frameLeft, frameTop, el.rotation);
+      if (shapeShadow) {
+        const shadowRgba = await pngToRawRgba(shapeShadow.buffer);
+        children.push({
+          name: "צל",
+          top: shapeShadow.top,
+          left: shapeShadow.left,
+          bottom: shapeShadow.top + shadowRgba.height,
+          right: shapeShadow.left + shadowRgba.width,
+          imageData: { data: shadowRgba.data, width: shadowRgba.width, height: shadowRgba.height },
+        });
+      }
       children.push({
         name: "צורה",
         top,

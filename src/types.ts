@@ -61,6 +61,10 @@ export type AlbumPhotoElement = {
   saturation2?: number; // suffixed — `filter: "bw"` already means "fully desaturated" and is separate
   // 0-100 edge-enhancement intensity — see src/lib/albumSharpen.ts (ported from the web app's own).
   sharpness?: number;
+  // When true, blocks both move and resize (see startDrag's own guard) — a photographer's
+  // final-position safeguard against nudging something out of place by accident. Still selectable
+  // (so the lock can be toggled back off) and still fully editable in every OTHER way.
+  locked?: boolean;
 };
 
 export type AlbumFontSizePt = number;
@@ -77,6 +81,7 @@ export type AlbumTextElement = {
   fontFamily?: string;
   color: string;
   align: "right" | "center" | "left";
+  locked?: boolean; // see AlbumPhotoElement.locked's own comment
 };
 
 // A standalone decorative overlay graphic (see src/lib/albumOrnaments.ts) — distinct from a
@@ -98,6 +103,7 @@ export type AlbumOrnamentElement = {
   color?: string;
   rotation?: number;
   opacity?: number;
+  locked?: boolean; // see AlbumPhotoElement.locked's own comment
 };
 
 // A freely positioned solid-color geometric shape — a plain rectangle by default, or clipped to
@@ -115,6 +121,16 @@ export type AlbumShapeElement = {
   color: string;
   rotation?: number;
   opacity?: number;
+  shadow?: number;
+  borderWidth?: number;
+  borderColor?: string;
+  // undefined = the normal solid-fill (optionally mask-clipped) shape. The two outline kinds have
+  // no fill at all — borderWidth/borderColor double as the stroke's own width/color instead of a
+  // decorative extra border, and maskId is unused. "line" is still a plain solid fill (unlike the
+  // two outline kinds) — it's just a thin bar — the tag exists only so the UI can show it a
+  // dedicated thickness slider and let it resize past the page edge like the two true outline kinds.
+  shapeStyle?: "rect-outline" | "circle-outline" | "line";
+  locked?: boolean; // see AlbumPhotoElement.locked's own comment
 };
 
 export type AlbumElement = AlbumPhotoElement | AlbumTextElement | AlbumOrnamentElement | AlbumShapeElement;
