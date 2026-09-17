@@ -16,6 +16,24 @@ type View =
 export default function AlbumBrowser({ initialGalleryId }: { initialGalleryId?: string | null }) {
   const [view, setView] = useState<View>({ screen: "galleries" });
 
+  // Lifted out of the grid screen (used to be AlbumPageGrid's own local state) so it survives the
+  // "album" ↔ "edit" screen transition — the bottom page-switcher strip inside the editor needs
+  // every OTHER page's data too, not just the one currently open, and re-fetching on every switch
+  // would both be wasteful and lose whatever a same-session save already patched in locally (see
+  // onSaved below). Keyed on the gallery actually being viewed right now (stable across "album" ↔
+  // "edit" for the SAME gallery, so switching pages or returning to the grid never re-triggers
+  // this) — only entering a genuinely different gallery (or this one again after leaving) re-fetches.
+  const currentGalleryId = view.screen === "album" || view.screen === "edit" ? view.gallery.id : null;
+  const [album, setAlbum] = useState<GalleryAlbumRow | null>(null);
+  const [spreads, setSpreads] = useState<GalleryAlbumSpreadRow[]>([]);
+  // Preview (not full-original) URLs for every photo referenced by any spread on this page, keyed
+  // by photo id — fetched once as plain DB rows (id + preview_storage_path), not downloaded bytes,
+  // so a 12-page album's worth of thumbnails costs one cheap query instead of pulling every full
+  // photo through the authenticated proxy the way this used to work before real thumbnails existed
+  // here at all.
+  const [previewUrls, setPreviewUrls] = useState<Map<string, string>>(new Map());
+  const [albumLoading, setAlbumLoading] = useState(true);
+
   useEffect(() => {
     if (!initialGalleryId) return;
     let cancelled = false;
@@ -33,11 +51,58 @@ export default function AlbumBrowser({ initialGalleryId }: { initialGalleryId?: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialGalleryId]);
 
+  useEffect(() => {
+    if (!currentGalleryId) return;
+    setAlbumLoading(true);
+    (async () => {
+      const { data: albumRow } = await supabase
+        .from("gallery_albums")
+        .select("id, gallery_id, photographer_id, title, status, cover_photo_id, width_cm, height_cm, safe_margin_cm, approved_at")
+        .eq("gallery_id", currentGalleryId)
+        .maybeSingle<GalleryAlbumRow>();
+      setAlbum(albumRow ?? null);
+      if (albumRow) {
+        const { data: spreadRows } = await supabase
+          .from("gallery_album_spreads")
+          .select(
+            "id, album_id, sort_order, photo_id_1, photo_id_2, layout, focal_x_1, focal_y_1, focal_x_2, focal_y_2, elements, background_photo_id, background_blur, background_opacity, background_zoom, width_cm, height_cm"
+          )
+          .eq("album_id", albumRow.id)
+          .order("sort_order", { ascending: true })
+          .returns<GalleryAlbumSpreadRow[]>();
+        const rows = spreadRows ?? [];
+        setSpreads(rows);
+
+        const photoIds = Array.from(
+          new Set(
+            rows.flatMap((s) => [
+              ...s.elements.filter((el): el is Extract<typeof el, { type: "photo" }> => el.type === "photo" && !!el.photoId).map((el) => el.photoId as string),
+              ...(s.background_photo_id ? [s.background_photo_id] : []),
+            ])
+          )
+        );
+        if (photoIds.length > 0) {
+          const { data: photoRows } = await supabase
+            .from("gallery_photos")
+            .select("id, preview_storage_path")
+            .in("id", photoIds)
+            .returns<{ id: string; preview_storage_path: string | null }[]>();
+          setPreviewUrls(new Map((photoRows ?? []).map((p) => [p.id, previewUrlFor(p.preview_storage_path)])));
+        }
+      }
+      setAlbumLoading(false);
+    })();
+  }, [currentGalleryId]);
+
   if (view.screen === "galleries") return <GalleryList onPick={(gallery) => setView({ screen: "album", gallery })} />;
   if (view.screen === "album")
     return (
       <AlbumPageGrid
         gallery={view.gallery}
+        album={album}
+        spreads={spreads}
+        previewUrls={previewUrls}
+        loading={albumLoading}
         onBack={() => setView({ screen: "galleries" })}
         // Straight into the editor — per explicit request, there's no more in-between "page
         // detail" screen (it only ever showed a preview + an "edit" button + the real-PSD export,
@@ -52,7 +117,18 @@ export default function AlbumBrowser({ initialGalleryId }: { initialGalleryId?: 
       album={view.album}
       spread={view.spread}
       onClose={() => setView({ screen: "album", gallery: view.gallery })}
-      onSaved={() => setView({ screen: "album", gallery: view.gallery })}
+      onSaved={(updated) => {
+        // Patches the lifted spreads list locally (same technique as the web app's own
+        // saveSpreadElements) so the page-switcher strip — and a subsequent switch back to this
+        // same page — reflect the fresh save immediately, without waiting on a re-fetch.
+        setSpreads((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+        setView({ screen: "album", gallery: view.gallery });
+      }}
+      spreads={spreads}
+      onSwitchSpread={(spreadId) => {
+        const target = spreads.find((s) => s.id === spreadId);
+        if (target) setView({ screen: "edit", gallery: view.gallery, album: view.album, spread: target });
+      }}
     />
   );
 }
@@ -122,64 +198,22 @@ function GalleryList({ onPick }: { onPick: (gallery: GalleryRow) => void }) {
 
 function AlbumPageGrid({
   gallery,
+  album,
+  spreads,
+  previewUrls,
+  loading,
   onBack,
   onPick,
 }: {
   gallery: GalleryRow;
+  album: GalleryAlbumRow | null;
+  spreads: GalleryAlbumSpreadRow[];
+  previewUrls: Map<string, string>;
+  loading: boolean;
   onBack: () => void;
   onPick: (album: GalleryAlbumRow, spread: GalleryAlbumSpreadRow) => void;
 }) {
-  const [album, setAlbum] = useState<GalleryAlbumRow | null>(null);
-  const [spreads, setSpreads] = useState<GalleryAlbumSpreadRow[]>([]);
-  // Preview (not full-original) URLs for every photo referenced by any spread on this page, keyed
-  // by photo id — fetched once as plain DB rows (id + preview_storage_path), not downloaded bytes,
-  // so a 12-page album's worth of thumbnails costs one cheap query instead of pulling every full
-  // photo through the authenticated proxy the way this used to work before real thumbnails existed
-  // here at all.
-  const [previewUrls, setPreviewUrls] = useState<Map<string, string>>(new Map());
-  const [loading, setLoading] = useState(true);
   const [exportModalOpen, setExportModalOpen] = useState(false);
-
-  useEffect(() => {
-    (async () => {
-      const { data: albumRow } = await supabase
-        .from("gallery_albums")
-        .select("id, gallery_id, photographer_id, title, status, cover_photo_id, width_cm, height_cm, safe_margin_cm, approved_at")
-        .eq("gallery_id", gallery.id)
-        .maybeSingle<GalleryAlbumRow>();
-      setAlbum(albumRow ?? null);
-      if (albumRow) {
-        const { data: spreadRows } = await supabase
-          .from("gallery_album_spreads")
-          .select(
-            "id, album_id, sort_order, photo_id_1, photo_id_2, layout, focal_x_1, focal_y_1, focal_x_2, focal_y_2, elements, background_photo_id, background_blur, background_opacity, background_zoom, width_cm, height_cm"
-          )
-          .eq("album_id", albumRow.id)
-          .order("sort_order", { ascending: true })
-          .returns<GalleryAlbumSpreadRow[]>();
-        const rows = spreadRows ?? [];
-        setSpreads(rows);
-
-        const photoIds = Array.from(
-          new Set(
-            rows.flatMap((s) => [
-              ...s.elements.filter((el): el is Extract<typeof el, { type: "photo" }> => el.type === "photo" && !!el.photoId).map((el) => el.photoId as string),
-              ...(s.background_photo_id ? [s.background_photo_id] : []),
-            ])
-          )
-        );
-        if (photoIds.length > 0) {
-          const { data: photoRows } = await supabase
-            .from("gallery_photos")
-            .select("id, preview_storage_path")
-            .in("id", photoIds)
-            .returns<{ id: string; preview_storage_path: string | null }[]>();
-          setPreviewUrls(new Map((photoRows ?? []).map((p) => [p.id, previewUrlFor(p.preview_storage_path)])));
-        }
-      }
-      setLoading(false);
-    })();
-  }, [gallery.id]);
 
   return (
     <div>

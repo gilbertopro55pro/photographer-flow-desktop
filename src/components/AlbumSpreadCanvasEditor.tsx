@@ -11,6 +11,7 @@ import { textHeightPctForFontSize, MAX_TEXT_HEIGHT_OVERSIZE_RATIO } from "@/lib/
 import { hasAdjustments, adjustmentsFilterId, adjustmentsSvgFilter, type PhotoAdjustments } from "@/lib/albumAdjustments";
 import { sharpenFilterId, sharpenSvgFilter } from "@/lib/albumSharpen";
 import AlbumEditorGuideModal from "@/components/AlbumEditorGuideModal";
+import SpreadPreview from "@/SpreadPreview";
 
 type PhotoWithUrl = { id: string; url: string; is_favorite?: boolean; folder_id?: string | null; original_filename?: string; created_at?: string };
 
@@ -1325,6 +1326,8 @@ export default function AlbumSpreadCanvasEditor({
   onCreateCustomOrnamentTab,
   onUploadCustomOrnament,
   onDeleteCustomOrnament,
+  spreads,
+  onSwitchSpread,
 }: {
   spread: GalleryAlbumSpreadRow;
   // Physical print dimensions plus the album's own configured safe-margin (cm) — used to size the
@@ -1355,6 +1358,10 @@ export default function AlbumSpreadCanvasEditor({
   onCreateCustomOrnamentTab?: (name: string) => Promise<void>;
   onUploadCustomOrnament?: (tabId: string, name: string, bytes: ArrayBuffer, contentType: string) => Promise<void>;
   onDeleteCustomOrnament?: (ornamentId: string) => Promise<void>;
+  // Every other page in the same album (including this one), for the bottom quick-switch strip —
+  // omitted-safe: no strip renders without it, same as the customOrnament* props above.
+  spreads?: GalleryAlbumSpreadRow[];
+  onSwitchSpread?: (spreadId: string) => void;
 }) {
   const [elements, setElementsRaw] = useState<AlbumElement[]>(() => (mode === "custom" ? seedElementsFromPreset(spread) : spread.elements));
   // Undo history — ported from the web app's own editor: up to 20 past snapshots of `elements`. A
@@ -2343,12 +2350,16 @@ export default function AlbumSpreadCanvasEditor({
   };
 
   const photoById = new Map(photos.map((p) => [p.id, p]));
+  // SpreadPreview (the page-switcher strip's thumbnail renderer) takes already-resolved id→url
+  // maps rather than raw photo/ornament rows — built here from the same `photos`/`customOrnaments`
+  // props everything else on this page already uses, so no separate fetch is needed.
+  const previewUrls = new Map(photos.map((p) => [p.id, p.url]));
+  const customOrnamentUrls = new Map((customOrnaments ?? []).map((o) => [o.id, o.url]));
 
-  // Ported from the web app's own editor — unsaved-changes gate for closing the editor. Web's
-  // version also gates a bottom page-switcher strip (onSwitchSpread) through this same function;
-  // that strip doesn't exist in desktop's editor (item 20, not ported), so only onClose is gated
-  // here. Also skips web's renderPreviewNow() call — that regenerates a cloud preview thumbnail
-  // used by the web app's own gallery list view, which has no desktop equivalent.
+  // Ported from the web app's own editor — unsaved-changes gate for closing the editor, and (once
+  // `spreads`/`onSwitchSpread` are supplied) for the bottom page-switcher strip too. Skips web's
+  // renderPreviewNow() call — that regenerates a cloud preview thumbnail used by the web app's own
+  // gallery list view, which has no desktop equivalent.
   const isDirty = () => JSON.stringify([elements, backgroundPhotoId, backgroundBlur, backgroundOpacity, backgroundZoom]) !== initialSnapshotRef.current;
 
   const requestLeave = async (action: () => void) => {
@@ -3216,6 +3227,49 @@ export default function AlbumSpreadCanvasEditor({
         >
           שמירה
         </button>
+
+        {/* The current page used to be filtered OUT of this list, which meant every page switch
+            removed a different item from the strip and the whole row visibly reflowed even though
+            the underlying page order never actually changed. Always rendering every page keeps the
+            row's order and positions stable across switches; the current one is just marked
+            instead of vanishing. */}
+        {mode === "custom" && spreads && spreads.length > 1 && onSwitchSpread && (
+          <div className="mt-3 rounded-2xl p-3" style={{ background: "var(--color-chip)" }}>
+            <p className="text-[11px] font-bold text-ink-soft mb-2">שאר העמודים באלבום</p>
+            <div className="flex items-center gap-2 overflow-x-auto overscroll-contain pb-1">
+              {spreads.map((s, i) => {
+                const isCurrent = s.id === spread.id;
+                const bg = s.background_photo_id ? photoById.get(s.background_photo_id) : undefined;
+                return (
+                  <div
+                    key={s.id}
+                    className="relative shrink-0 rounded-lg overflow-hidden w-[calc(25%-6px)] aspect-square"
+                    style={{
+                      outline: isCurrent ? "2px solid var(--color-amber-deep)" : "1px solid var(--color-line)",
+                      outlineOffset: isCurrent ? "-2px" : undefined,
+                      opacity: isCurrent ? 0.7 : 1,
+                      cursor: isCurrent ? "default" : "pointer",
+                    }}
+                    onClick={isCurrent ? undefined : () => requestLeave(() => onSwitchSpread(s.id))}
+                  >
+                    <SpreadPreview
+                      elements={s.elements}
+                      previewUrls={previewUrls}
+                      background={bg ? { url: bg.url, blur: s.background_blur, opacity: s.background_opacity } : null}
+                      customOrnamentUrls={customOrnamentUrls}
+                    />
+                    <span
+                      className="absolute top-1 right-1 h-4 min-w-4 px-1 rounded-full flex items-center justify-center text-[9px] font-bold text-white"
+                      style={{ background: isCurrent ? "var(--color-amber-deep)" : "rgba(46,49,66,0.65)" }}
+                    >
+                      {i + 1}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {mode === "custom" && (
           <div className="mt-3 pt-3 border-t border-line">

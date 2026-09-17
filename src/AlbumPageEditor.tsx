@@ -31,12 +31,18 @@ export default function AlbumPageEditor({
   spread,
   onClose,
   onSaved,
+  spreads,
+  onSwitchSpread,
 }: {
   gallery: GalleryRow;
   album: GalleryAlbumRow;
   spread: GalleryAlbumSpreadRow;
   onClose: () => void;
   onSaved: (updated: GalleryAlbumSpreadRow) => void;
+  // Every other page in the same album (including this one), for the bottom quick-switch strip in
+  // the canvas editor — omitted-safe: no strip renders without it.
+  spreads?: GalleryAlbumSpreadRow[];
+  onSwitchSpread?: (spreadId: string) => void;
 }) {
   const [photos, setPhotos] = useState<PhotoWithUrl[]>([]);
   // Kept separately from `photos` (which only carries the lightweight preview URL) — real export
@@ -340,6 +346,8 @@ export default function AlbumPageEditor({
         onCreateCustomOrnamentTab={handleCreateCustomOrnamentTab}
         onUploadCustomOrnament={handleUploadCustomOrnament}
         onDeleteCustomOrnament={handleDeleteCustomOrnament}
+        spreads={spreads}
+        onSwitchSpread={onSwitchSpread}
       />
       {/* Floating above the editor's own z-[80] backdrop — the real single-page PSD export this
           native app adds over the web version (see PageDetail's removal in AlbumBrowser.tsx for
