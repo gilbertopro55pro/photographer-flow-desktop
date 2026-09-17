@@ -1420,6 +1420,22 @@ export default function AlbumSpreadCanvasEditor({
   // Ported from the web app's editor — lets the drag panel be ordered by filename or upload date
   // instead of only the gallery's own sort_order.
   const [dragPanelSort, setDragPanelSort] = useState<"default" | "name" | "date">("default");
+  // Off by default on every page open — per the web app's own explicit request there, rather than
+  // always-on.
+  const [dragPanelHoverZoomEnabled, setDragPanelHoverZoomEnabled] = useState(false);
+  // Fixed-position (viewport-relative, computed from the icon's own live rect) instead of a plain
+  // CSS absolute+group-hover popup — the info icon lives inside the controls sidebar, which has its
+  // own overflow-y-auto scroll region; a plain absolute popup that pops out sideways gets its edges
+  // silently clipped by that ancestor's overflow box. position:fixed escapes it.
+  const [hoverZoomTooltipPos, setHoverZoomTooltipPos] = useState<{ top: number; right: number } | null>(null);
+  // Click a favorites-panel thumbnail to toggle it in/out of this set without starting a drag —
+  // dragging any thumbnail that's part of a 2+ selection then carries the whole group together,
+  // dragging one that ISN'T selected still drags just that one (selection is left untouched).
+  const [dragPanelSelectedIds, setDragPanelSelectedIds] = useState<Set<string>>(new Set());
+  const [dragPanelHoverPreview, setDragPanelHoverPreview] = useState<{ url: string; top: number; left: number; width: number; height: number } | null>(null);
+  // Token bumped on every hover so a slow-loading preview from a PREVIOUS hover can't land after
+  // the pointer has already moved to a different (or no) thumbnail.
+  const hoverPreviewTokenRef = useRef(0);
   // Right-click menu on a favorite-panel thumbnail — ported from the web app's own editor, lets a
   // photographer set/unset a page background without dragging the photo in first.
   const [photoContextMenu, setPhotoContextMenu] = useState<{ photoId: string; top: number; left: number } | null>(null);
@@ -1926,6 +1942,91 @@ export default function AlbumSpreadCanvasEditor({
     setSelectedIds(new Set(newPhotoElements.map((e) => e.id)));
   };
 
+  // Same orientation-aware sizing as confirmMultiPhotos above, but anchored at an actual drop
+  // point on the canvas instead of a fixed corner — used when one or several favorite photos are
+  // dragged straight onto the page (from the drag panel) instead of picked in the "+ תמונה" modal.
+  const buildOrientedPhotoFrames = async (ids: string[], centerXPct: number, centerYPct: number): Promise<AlbumPhotoElement[]> => {
+    const items = await Promise.all(ids.map(async (id) => ({ id, aspect: await loadImageAspect(photoById.get(id)?.url ?? "") })));
+    const baseSize = 36;
+    return items.map((item, i) => {
+      const widthPct = item.aspect >= 1 ? baseSize : baseSize * item.aspect;
+      const heightPct = item.aspect >= 1 ? baseSize / item.aspect : baseSize;
+      const cascade = i * 4;
+      return {
+        id: `el-${Date.now()}-${i}`,
+        type: "photo",
+        photoId: item.id,
+        xPct: Math.max(0, Math.min(100 - widthPct, centerXPct - widthPct / 2 + cascade)),
+        yPct: Math.max(0, Math.min(100 - heightPct, centerYPct - heightPct / 2 + cascade)),
+        widthPct,
+        heightPct,
+        focalX: 50,
+        focalY: 50,
+      };
+    });
+  };
+
+  // Dragging 2+ favorite photos onto an otherwise-empty page (no pre-existing empty frames to
+  // fill — see the "multi:" drop handler below) auto-arranges them into a grid collage instead of
+  // the single-photo cascade above: a roughly-square grid of cells covering 85% of the page, each
+  // photo sized to fit its own cell via contain (not cover) so it's never cropped — its frame
+  // exactly matches its own aspect ratio, same as buildOrientedPhotoFrames, just fit inside a grid
+  // cell instead of a fixed base size.
+  const buildCollageLayout = async (ids: string[]): Promise<AlbumPhotoElement[]> => {
+    const items = await Promise.all(ids.map(async (id) => ({ id, aspect: await loadImageAspect(photoById.get(id)?.url ?? "") })));
+    const n = items.length;
+    const cols = Math.max(1, Math.ceil(Math.sqrt(n)));
+    const rows = Math.max(1, Math.ceil(n / cols));
+    const GAP_PCT = 2;
+    const USABLE_PCT = 85;
+    const outerOffset = (100 - USABLE_PCT) / 2;
+    const cellW = (USABLE_PCT - GAP_PCT * (cols - 1)) / cols;
+    const cellH = (USABLE_PCT - GAP_PCT * (rows - 1)) / rows;
+    const canvasW = album.width_cm || 1;
+    const canvasH = album.height_cm || 1;
+    const itemsInLastRow = n - cols * (rows - 1);
+    return items.map((item, i) => {
+      const row = Math.floor(i / cols);
+      const col = i % cols;
+      // Centers a short last row within the full grid width instead of leaving it flush left,
+      // e.g. 5 photos → a 3-wide grid whose 2-photo last row sits centered under the row above.
+      const rowItemCount = row === rows - 1 ? itemsInLastRow : cols;
+      const rowStartOffset = outerOffset + ((cols - rowItemCount) * (cellW + GAP_PCT)) / 2;
+      const cellLeft = rowStartOffset + col * (cellW + GAP_PCT);
+      const cellTop = outerOffset + row * (cellH + GAP_PCT);
+
+      // Contain-fit (not cover) within the cell, in real cm so the aspect ratio is honest — same
+      // math as orientedFrameSizePct, just constrained to the cell's own box instead of a fixed
+      // base size, and clamped down (never up) so the photo never overflows its cell.
+      const cellWCm = (cellW / 100) * canvasW;
+      const cellHCm = (cellH / 100) * canvasH;
+      const cellAspect = cellWCm / cellHCm;
+      let widthCm: number;
+      let heightCm: number;
+      if (item.aspect > cellAspect) {
+        widthCm = cellWCm;
+        heightCm = widthCm / item.aspect;
+      } else {
+        heightCm = cellHCm;
+        widthCm = heightCm * item.aspect;
+      }
+      const widthPct = (widthCm / canvasW) * 100;
+      const heightPct = (heightCm / canvasH) * 100;
+
+      return {
+        id: `el-${Date.now()}-${i}`,
+        type: "photo",
+        photoId: item.id,
+        xPct: cellLeft + (cellW - widthPct) / 2,
+        yPct: cellTop + (cellH - heightPct) / 2,
+        widthPct,
+        heightPct,
+        focalX: 50,
+        focalY: 50,
+      };
+    });
+  };
+
   const removeBackground = () => setBackgroundPhotoId(null);
 
   const addText = () => {
@@ -2331,11 +2432,107 @@ export default function AlbumSpreadCanvasEditor({
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => {
             const dropped = e.dataTransfer.getData("text/plain");
-            if (!dropped?.startsWith("ornament:") && !dropped?.startsWith("customOrnament:") && !dropped?.startsWith("shape:")) return;
-            e.preventDefault();
+            if (!dropped) return;
             const rect = canvasRef.current!.getBoundingClientRect();
             const xPct = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
             const yPct = Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100));
+            if (dropped.startsWith("multi:")) {
+              // A bundle of favorite photos dragged together from the panel. If a template was
+              // already applied (or frames added manually) leaving empty photo frames on the
+              // page, fill those first — each photo goes into whichever empty frame's own aspect
+              // ratio is closest to its own (portrait photos into portrait-shaped frames, etc, a
+              // simple greedy best-fit rather than a full optimal assignment). Only once every
+              // empty frame is used does this fall back to fresh cascaded/collage frames.
+              e.preventDefault();
+              const ids = dropped.slice(6).split(",").filter(Boolean);
+              const emptyFrames = elements.filter((el): el is AlbumPhotoElement => el.type === "photo" && !el.photoId);
+              Promise.all(ids.map(async (id) => ({ id, aspect: await loadImageAspect(photoById.get(id)?.url ?? "") }))).then(async (items) => {
+                if (emptyFrames.length === 0) {
+                  const frames = ids.length >= 2 ? await buildCollageLayout(ids) : await buildOrientedPhotoFrames(ids, xPct, yPct);
+                  setElements((prev) => [...prev, ...frames]);
+                  setSelectedIds(new Set(frames.map((f) => f.id)));
+                  return;
+                }
+                const canvasW = album.width_cm || 1;
+                const canvasH = album.height_cm || 1;
+                const frameAspect = (f: AlbumPhotoElement) => ((f.widthPct / 100) * canvasW) / ((f.heightPct / 100) * canvasH);
+                const remainingItems = [...items];
+                const assignments: { frameId: string; photoId: string }[] = [];
+                for (const frame of emptyFrames) {
+                  if (remainingItems.length === 0) break;
+                  const fa = frameAspect(frame);
+                  let bestIdx = 0;
+                  let bestDiff = Infinity;
+                  remainingItems.forEach((item, idx) => {
+                    const diff = Math.abs(item.aspect - fa);
+                    if (diff < bestDiff) {
+                      bestDiff = diff;
+                      bestIdx = idx;
+                    }
+                  });
+                  assignments.push({ frameId: frame.id, photoId: remainingItems.splice(bestIdx, 1)[0].id });
+                }
+                const leftoverIds = remainingItems.map((it) => it.id);
+                const leftoverFrames = leftoverIds.length > 0 ? await buildOrientedPhotoFrames(leftoverIds, xPct, yPct) : [];
+                setElements((prev) => [
+                  ...prev.map((el) => {
+                    const a = assignments.find((x) => x.frameId === el.id);
+                    if (!a || el.type !== "photo") return el;
+                    const matchedItem = items.find((it) => it.id === a.photoId);
+                    if (!matchedItem) return { ...el, photoId: a.photoId, focalX: 50, focalY: 50 };
+                    const boxWCm = (el.widthPct / 100) * canvasW;
+                    const boxHCm = (el.heightPct / 100) * canvasH;
+                    const boxAspect = boxWCm / boxHCm;
+                    let widthCm: number;
+                    let heightCm: number;
+                    if (matchedItem.aspect > boxAspect) {
+                      widthCm = boxWCm;
+                      heightCm = widthCm / matchedItem.aspect;
+                    } else {
+                      heightCm = boxHCm;
+                      widthCm = heightCm * matchedItem.aspect;
+                    }
+                    const widthPct = (widthCm / canvasW) * 100;
+                    const heightPct = (heightCm / canvasH) * 100;
+                    const centerX = el.xPct + el.widthPct / 2;
+                    const centerY = el.yPct + el.heightPct / 2;
+                    return {
+                      ...el,
+                      photoId: a.photoId,
+                      focalX: 50,
+                      focalY: 50,
+                      widthPct,
+                      heightPct,
+                      xPct: centerX - widthPct / 2,
+                      yPct: centerY - heightPct / 2,
+                    };
+                  }),
+                  ...leftoverFrames,
+                ]);
+                setSelectedIds(new Set([...assignments.map((a) => a.frameId), ...leftoverFrames.map((f) => f.id)]));
+              });
+              setDragPanelSelectedIds(new Set());
+              return;
+            }
+            if (
+              !dropped.startsWith("ornament:") &&
+              !dropped.startsWith("customOrnament:") &&
+              !dropped.startsWith("shape:") &&
+              !dropped.startsWith("shapeOutline:") &&
+              !dropped.startsWith("mask:")
+            ) {
+              // A single favorite photo dropped on empty canvas (not consumed by any frame's own
+              // onDrop, which stops propagation when it lands on an existing frame) — create a new
+              // frame sized to match the photo's real orientation instead of silently doing nothing.
+              e.preventDefault();
+              buildOrientedPhotoFrames([dropped], xPct, yPct).then((frames) => {
+                setElements((prev) => [...prev, ...frames]);
+                setSelectedIds(new Set(frames.map((f) => f.id)));
+              });
+              return;
+            }
+            if (dropped.startsWith("mask:")) return;
+            e.preventDefault();
             if (dropped.startsWith("customOrnament:")) addCustomOrnament(dropped.slice(15), { xPct, yPct });
             else if (dropped.startsWith("shapeOutline:")) addOutlineShape(dropped.slice(13) as "square" | "rectangle" | "circle" | "line", { xPct, yPct });
             else if (dropped.startsWith("shape:")) addShape(dropped.slice(6) === "__plain__" ? undefined : dropped.slice(6), { xPct, yPct });
@@ -2976,9 +3173,52 @@ export default function AlbumSpreadCanvasEditor({
 
         {mode === "custom" && (
           <div className="mt-3 pt-3 border-t border-line">
-            <div className="flex items-center justify-between mb-1.5 gap-2">
+            <div className="flex items-center justify-between mb-1.5 gap-2 flex-wrap">
               <p className="text-[11px] font-bold text-ink-soft shrink-0">גררו תמונה מועדפת אל המסגרת הרצויה</p>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* The switch itself has no visible label text (just a bare pill), so its native
+                    title tooltip is easy to miss entirely — this adds an always-discoverable (?)
+                    icon with a custom tooltip that explains what the toggle does. */}
+                <span
+                  className="text-ink-soft/70 cursor-help flex items-center shrink-0"
+                  onMouseEnter={(e) => {
+                    const r = e.currentTarget.getBoundingClientRect();
+                    setHoverZoomTooltipPos({ top: r.top, right: window.innerWidth - r.right });
+                  }}
+                  onMouseLeave={() => setHoverZoomTooltipPos(null)}
+                >
+                  <IconInfo size={13} />
+                </span>
+                {hoverZoomTooltipPos && (
+                  <div
+                    className="pointer-events-none fixed w-40 rounded-lg bg-ink text-white text-[10px] leading-snug p-2 z-[95] text-right"
+                    style={{ top: hoverZoomTooltipPos.top, right: hoverZoomTooltipPos.right, transform: "translateY(calc(-100% - 6px))" }}
+                  >
+                    כשהמתג פעיל, ריחוף עם העכבר מעל תמונה בפאנל מציג תצוגה מקדימה מוגדלת שלה
+                  </div>
+                )}
+                <button
+                  onClick={() => setDragPanelHoverZoomEnabled((v) => !v)}
+                  role="switch"
+                  aria-checked={dragPanelHoverZoomEnabled}
+                  title="תצוגה מוגדלת בריחוף עכבר"
+                  className="relative shrink-0 rounded-full flex items-center px-0.5 h-4.5 w-8"
+                  style={{
+                    background: dragPanelHoverZoomEnabled ? "var(--color-amber-deep)" : "var(--color-line)",
+                    justifyContent: dragPanelHoverZoomEnabled ? "flex-start" : "flex-end",
+                  }}
+                >
+                  <span className="rounded-full shadow h-3.5 w-3.5" style={{ background: "#fff" }} />
+                </button>
+                {dragPanelSelectedIds.size > 0 && (
+                  <button
+                    onClick={() => setDragPanelSelectedIds(new Set())}
+                    className="text-[11px] font-semibold shrink-0"
+                    style={{ color: "var(--color-amber-deep)" }}
+                  >
+                    {dragPanelSelectedIds.size} נבחרו — ניקוי
+                  </button>
+                )}
                 {favoritePhotos.length > 1 && (
                   <select
                     value={dragPanelSort}
@@ -2998,12 +3238,17 @@ export default function AlbumSpreadCanvasEditor({
                 )}
               </div>
             </div>
+            {dragPanelGroups.length > 0 && (
+              <p className="text-[10px] text-ink-soft mb-1.5">
+                לחיצה בוחרת כמה תמונות יחד — גוררים כל אחת מהן כדי לשבץ את כולן בעמוד, לפי הכיוון של כל תמונה
+              </p>
+            )}
             {dragPanelGroups.length === 0 ? (
               <p className="text-[11px] text-ink-soft text-center py-3">
                 {favoritePhotos.length === 0 ? "אין תמונות מועדפות בגלריה הזו עדיין." : "כל התמונות המועדפות כבר שובצו בעמוד."}
               </p>
             ) : (
-              <div className="space-y-2.5 max-h-56 overflow-y-auto pr-0.5">
+              <div className="space-y-2.5 max-h-56 overflow-y-auto pr-0.5" onMouseLeave={() => { hoverPreviewTokenRef.current++; setDragPanelHoverPreview(null); }}>
                 {dragPanelGroups.map((group) => (
                   <div key={group.id}>
                     {group.name && <p className="text-[10px] font-semibold text-ink-soft mb-1">{group.name}</p>}
@@ -3014,16 +3259,73 @@ export default function AlbumSpreadCanvasEditor({
                           <div
                             key={p.id}
                             draggable
-                            onDragStart={(e) => e.dataTransfer.setData("text/plain", p.id)}
+                            onDragStart={(e) => {
+                              hoverPreviewTokenRef.current++;
+                              setDragPanelHoverPreview(null);
+                              // Dragging a thumbnail that's part of a 2+ selection carries the
+                              // whole group; dragging one that isn't selected drags just that one,
+                              // leaving whatever else is selected untouched.
+                              const bundle = dragPanelSelectedIds.has(p.id) && dragPanelSelectedIds.size > 1 ? Array.from(dragPanelSelectedIds) : [p.id];
+                              e.dataTransfer.setData("text/plain", bundle.length > 1 ? `multi:${bundle.join(",")}` : bundle[0]);
+                            }}
+                            onClick={() => {
+                              setDragPanelSelectedIds((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(p.id)) next.delete(p.id);
+                                else next.add(p.id);
+                                return next;
+                              });
+                            }}
+                            onMouseEnter={(e) => {
+                              if (!dragPanelHoverZoomEnabled) return;
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              const url = p.url;
+                              const token = ++hoverPreviewTokenRef.current;
+                              // Loads the real image first so the floating preview box is sized to
+                              // match its actual orientation (portrait vs. landscape) instead of a
+                              // fixed square that crops one dimension — the box is only shown once
+                              // the true aspect ratio is known, so it never has to reflow/jump.
+                              const img = new window.Image();
+                              img.onload = () => {
+                                if (hoverPreviewTokenRef.current !== token) return;
+                                const maxDim = 260;
+                                const ratio = img.naturalWidth && img.naturalHeight ? img.naturalWidth / img.naturalHeight : 1;
+                                const width = ratio >= 1 ? maxDim : Math.round(maxDim * ratio);
+                                const height = ratio >= 1 ? Math.round(maxDim / ratio) : maxDim;
+                                const showOnLeftSide = rect.left >= width + 12;
+                                setDragPanelHoverPreview({
+                                  url,
+                                  width,
+                                  height,
+                                  top: Math.min(Math.max(rect.top + rect.height / 2 - height / 2, 8), window.innerHeight - height - 8),
+                                  left: showOnLeftSide ? rect.left - width - 12 : rect.right + 12,
+                                });
+                              };
+                              img.src = url;
+                            }}
+                            onMouseLeave={() => { hoverPreviewTokenRef.current++; setDragPanelHoverPreview(null); }}
                             onContextMenu={(e) => {
                               e.preventDefault();
+                              hoverPreviewTokenRef.current++;
+                              setDragPanelHoverPreview(null);
                               setPhotoContextMenu({ photoId: p.id, top: e.clientY, left: e.clientX });
                             }}
                             className="relative aspect-square rounded-md overflow-hidden cursor-grab active:cursor-grabbing"
-                            style={{ boxShadow: "0 0 0 1px var(--color-line)", opacity: alreadyUsed ? 0.5 : 1 }}
+                            style={{
+                              boxShadow: dragPanelSelectedIds.has(p.id) ? "0 0 0 2px var(--color-amber-deep)" : "0 0 0 1px var(--color-line)",
+                              opacity: alreadyUsed ? 0.5 : 1,
+                            }}
                           >
                             {/* eslint-disable-next-line @next/next/no-img-element */}
                             <img src={p.url} alt="" draggable={false} className="w-full h-full object-cover pointer-events-none" />
+                            {dragPanelSelectedIds.has(p.id) && (
+                              <span
+                                className="absolute top-0.5 left-0.5 h-3.5 w-3.5 rounded-full flex items-center justify-center"
+                                style={{ background: "var(--color-amber-deep)", color: "#fff" }}
+                              >
+                                <IconCheck size={9} />
+                              </span>
+                            )}
                             {alreadyUsed && (
                               <span
                                 className="absolute top-0.5 right-0.5 h-3.5 w-3.5 rounded-full flex items-center justify-center"
@@ -3518,6 +3820,22 @@ export default function AlbumSpreadCanvasEditor({
             </div>
           </div>
         </>
+      )}
+
+      {dragPanelHoverPreview && (
+        <div
+          className="fixed z-[90] rounded-xl overflow-hidden pointer-events-none"
+          style={{
+            top: dragPanelHoverPreview.top,
+            left: dragPanelHoverPreview.left,
+            width: dragPanelHoverPreview.width,
+            height: dragPanelHoverPreview.height,
+            boxShadow: "0 12px 32px rgba(32,31,51,0.35), 0 0 0 3px var(--color-paper)",
+          }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={dragPanelHoverPreview.url} alt="" className="w-full h-full object-contain" />
+        </div>
       )}
 
       {customTabModalOpen && (
