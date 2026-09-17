@@ -10,6 +10,7 @@ import { ALBUM_ORNAMENTS, ORNAMENT_TABS, findOrnament, ornamentDataUrl } from "@
 import { textHeightPctForFontSize, MAX_TEXT_HEIGHT_OVERSIZE_RATIO } from "@/lib/albumTextSizing";
 import { hasAdjustments, adjustmentsFilterId, adjustmentsSvgFilter, type PhotoAdjustments } from "@/lib/albumAdjustments";
 import { sharpenFilterId, sharpenSvgFilter } from "@/lib/albumSharpen";
+import AlbumEditorGuideModal from "@/components/AlbumEditorGuideModal";
 
 type PhotoWithUrl = { id: string; url: string; is_favorite?: boolean; folder_id?: string | null; original_filename?: string; created_at?: string };
 
@@ -1414,6 +1415,13 @@ export default function AlbumSpreadCanvasEditor({
   const [multiPhotoIds, setMultiPhotoIds] = useState<Set<string>>(new Set());
   const [loadingMultiLayout, setLoadingMultiLayout] = useState(false);
   const [showAllInPicker, setShowAllInPicker] = useState(false);
+  const [photoSizePickerOpen, setPhotoSizePickerOpen] = useState(false);
+  const [photoSizePanelRect, setPhotoSizePanelRect] = useState<{ top: number; left: number; width: number } | null>(null);
+  const photoSizeButtonRef = useRef<HTMLButtonElement>(null);
+  // Opens before the picker modal itself — picking a size here overrides the usual
+  // aspect-ratio-matched auto sizing in confirmMultiPhotos (see its own comment).
+  const [pendingPhotoSize, setPendingPhotoSize] = useState<"auto" | "rect" | "circle" | "square">("auto");
+  const [guideOpen, setGuideOpen] = useState(false);
   // Separate toggle for the drag-to-frame favorites panel below the save button — independent of
   // the "+ תמונה" picker modal's own "show all" toggle above.
   const [showAllDragPanel, setShowAllDragPanel] = useState(false);
@@ -1918,9 +1926,24 @@ export default function AlbumSpreadCanvasEditor({
       ids.map(async (id) => ({ id, aspect: await loadImageAspect(photoById.get(id)?.url ?? "") }))
     );
     const baseSize = 36;
+    // A chosen fixed real-world size (rect 10x7.5cm / circle Ø5cm / square 5x5cm) overrides the
+    // usual aspect-ratio-matched auto sizing — converted from cm using the album's own print
+    // dimensions, same as every other cm-based measurement in this editor.
+    const fixedCm =
+      pendingPhotoSize === "rect"
+        ? { w: 10, h: 7.5 }
+        : pendingPhotoSize === "circle"
+        ? { w: 5, h: 5 }
+        : pendingPhotoSize === "square"
+        ? { w: 5, h: 5 }
+        : null;
+    const fixedWidthPct = fixedCm && album.width_cm > 0 ? (fixedCm.w / album.width_cm) * 100 : null;
+    const fixedHeightPct = fixedCm && album.height_cm > 0 ? (fixedCm.h / album.height_cm) * 100 : null;
     const newPhotoElements: AlbumPhotoElement[] = items.map((item, i) => {
-      const widthPct = item.aspect >= 1 ? baseSize : baseSize * item.aspect;
-      const heightPct = item.aspect >= 1 ? baseSize / item.aspect : baseSize;
+      const autoWidthPct = item.aspect >= 1 ? baseSize : baseSize * item.aspect;
+      const autoHeightPct = item.aspect >= 1 ? baseSize / item.aspect : baseSize;
+      const widthPct = fixedWidthPct ?? autoWidthPct;
+      const heightPct = fixedHeightPct ?? autoHeightPct;
       const cascade = i * 4;
       return {
         id: `el-${Date.now()}-${i}`,
@@ -1932,6 +1955,7 @@ export default function AlbumSpreadCanvasEditor({
         heightPct,
         focalX: 50,
         focalY: 50,
+        maskId: pendingPhotoSize === "circle" ? "shape-circle" : undefined,
       };
     });
     setElements((prev) => [...prev, ...newPhotoElements]);
@@ -1940,6 +1964,7 @@ export default function AlbumSpreadCanvasEditor({
     setAddingMultiplePhotos(false);
     setMultiPhotoIds(new Set());
     setSelectedIds(new Set(newPhotoElements.map((e) => e.id)));
+    setPendingPhotoSize("auto");
   };
 
   // Same orientation-aware sizing as confirmMultiPhotos above, but anchored at an actual drop
@@ -2401,10 +2426,23 @@ export default function AlbumSpreadCanvasEditor({
         <div className="lg:flex-1 lg:flex lg:flex-col lg:min-w-0 lg:min-h-0">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-base font-bold font-display">{mode === "custom" ? "עיצוב חופשי" : "הוספת טקסט לעמוד"}</h2>
-          <button onClick={handleCloseAttempt} className="h-8 w-8 rounded-full flex items-center justify-center bg-white border border-line">
-            <IconClose />
-          </button>
+          <div className="flex items-center gap-2">
+            {mode === "custom" && (
+              <button
+                onClick={() => setGuideOpen(true)}
+                className="h-8 pr-3 pl-2.5 rounded-full flex items-center gap-1 bg-white border border-line text-xs font-bold whitespace-nowrap"
+                style={{ color: "var(--color-amber-deep)" }}
+              >
+                <IconInfo size={13} />
+                מדריך למשתמש
+              </button>
+            )}
+            <button onClick={handleCloseAttempt} className="h-8 w-8 shrink-0 rounded-full flex items-center justify-center bg-white border border-line">
+              <IconClose />
+            </button>
+          </div>
         </div>
+        {guideOpen && <AlbumEditorGuideModal onClose={() => setGuideOpen(false)} />}
 
         <div
           ref={canvasWrapRef}
@@ -3094,7 +3132,15 @@ export default function AlbumSpreadCanvasEditor({
         <div className="flex gap-2 mt-3">
           {mode === "custom" && (
             <>
-              <button onClick={openPickerForNewPhoto} className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink">
+              <button
+                ref={photoSizeButtonRef}
+                onClick={() => {
+                  const rect = photoSizeButtonRef.current?.getBoundingClientRect();
+                  if (rect) setPhotoSizePanelRect({ top: rect.bottom, left: rect.left, width: Math.max(rect.width, 190) });
+                  setPhotoSizePickerOpen(true);
+                }}
+                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink"
+              >
                 + תמונה
               </button>
               <button onClick={addFrame} className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink">
@@ -3818,6 +3864,38 @@ export default function AlbumSpreadCanvasEditor({
                 </button>
               ))}
             </div>
+          </div>
+        </>
+      )}
+
+      {photoSizePickerOpen && photoSizePanelRect && (
+        <>
+          <div className="fixed inset-0 z-[84]" onClick={() => setPhotoSizePickerOpen(false)} />
+          <div
+            className="fixed z-[85] rounded-xl p-2 bg-paper shadow-sheet"
+            style={{ top: photoSizePanelRect.top + 4, left: photoSizePanelRect.left, width: photoSizePanelRect.width }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {(
+              [
+                { size: "auto", label: "אוטומטי — לפי צורת התמונה" },
+                { size: "rect", label: "מלבן 10x7.5 ס״מ" },
+                { size: "circle", label: "עיגול Ø5 ס״מ" },
+                { size: "square", label: "ריבוע 5x5 ס״מ" },
+              ] as const
+            ).map(({ size, label }) => (
+              <button
+                key={size}
+                onClick={() => {
+                  setPendingPhotoSize(size);
+                  setPhotoSizePickerOpen(false);
+                  openPickerForNewPhoto();
+                }}
+                className="w-full text-right rounded-lg px-3 py-2 text-sm font-semibold text-ink hover:bg-chip"
+              >
+                {label}
+              </button>
+            ))}
           </div>
         </>
       )}
