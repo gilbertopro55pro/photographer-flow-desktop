@@ -320,6 +320,140 @@ function MiniSlider({ label, value, min, max, step = 1, unit = "", onChange }: {
   );
 }
 
+// Ported verbatim from the web app's own editor. Shared by every one of the free-drag side panels
+// (ornament/shape/text/photo-adjust) — one instance covers all four since only one of them is ever
+// mounted at a time.
+function useDraggablePanelOffset(
+  resetKey: string | null,
+  clampOffset?: (offset: { x: number; y: number }) => { x: number; y: number },
+  controlled?: { offset: { x: number; y: number }; onChange: (offset: { x: number; y: number }) => void }
+) {
+  const [internalOffset, setInternalOffset] = useState({ x: 0, y: 0 });
+  const [trackedKey, setTrackedKey] = useState(resetKey);
+  if (!controlled && resetKey !== trackedKey) {
+    setTrackedKey(resetKey);
+    setInternalOffset({ x: 0, y: 0 });
+  }
+  const offset = controlled ? controlled.offset : internalOffset;
+  const setOffset = controlled ? controlled.onChange : setInternalOffset;
+  const dragRef = useRef<{ startClientX: number; startClientY: number; startX: number; startY: number } | null>(null);
+  // Exposed so the panel can turn OFF its own open/close CSS transition on the same `transform`
+  // property while a real drag is in progress — without this, every pointermove during a drag was
+  // fighting a 220ms eased transition on `transform`, so the panel visibly lagged/rubber-banded
+  // behind the cursor instead of tracking it 1:1.
+  const [isDragging, setIsDragging] = useState(false);
+
+  // preventDefault on both down and move — without it, dragging the grip across the page still
+  // kicks off the browser's own native text-selection-drag (since the grip sits outside the
+  // canvas's `select-none`), highlighting whatever text the cursor passes over while the panel
+  // moves. stopPropagation alone doesn't suppress that; preventDefault does.
+  const onPointerDown = (e: React.PointerEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    dragRef.current = { startClientX: e.clientX, startClientY: e.clientY, startX: offset.x, startY: offset.y };
+    setIsDragging(true);
+  };
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!dragRef.current) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const raw = {
+      x: dragRef.current.startX + (e.clientX - dragRef.current.startClientX),
+      y: dragRef.current.startY + (e.clientY - dragRef.current.startClientY),
+    };
+    setOffset(clampOffset ? clampOffset(raw) : raw);
+  };
+  const onPointerUp = (e: React.PointerEvent) => {
+    e.stopPropagation();
+    dragRef.current = null;
+    setIsDragging(false);
+  };
+
+  return { offset, isDragging, gripHandlers: { onPointerDown, onPointerMove, onPointerUp } };
+}
+
+// The small grabbable strip every draggable panel renders at its own top edge — a dedicated grip
+// rather than making the whole panel draggable so it never steals a click/drag meant for one of
+// the panel's own sliders or buttons.
+function PanelDragGrip({ handlers }: { handlers: ReturnType<typeof useDraggablePanelOffset>["gripHandlers"] }) {
+  return (
+    <div
+      {...handlers}
+      title="גררו כדי להזיז את הפאנל"
+      className="flex items-center justify-center gap-1 h-5 -mt-0.5 -mx-0.5 mb-0.5 rounded-t-lg cursor-grab active:cursor-grabbing touch-none"
+      style={{ background: "var(--color-amber-deep)", userSelect: "none", WebkitUserSelect: "none" }}
+    >
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="5 9 2 12 5 15" />
+        <polyline points="9 5 12 2 15 5" />
+        <polyline points="15 19 12 22 9 19" />
+        <polyline points="19 9 22 12 19 15" />
+        <line x1="2" y1="12" x2="22" y2="12" />
+        <line x1="12" y1="2" x2="12" y2="22" />
+      </svg>
+      <span className="text-[8px] font-bold text-white">גררו להזזה</span>
+    </div>
+  );
+}
+
+// A user-resizable panel size, layered on top of a fixed default (widthPx/heightPx) via a
+// bottom-right-corner handle. Deliberately does NOT reset per element selection (unlike
+// useDraggablePanelOffset's offset) — the panel should stay the same size every time, so once
+// resized, that becomes the new standing default for every subsequent photo too.
+function useResizablePanelSize(defaultWidthPx: number, defaultHeightPx: number) {
+  const [override, setOverride] = useState<{ width: number; height: number } | null>(null);
+  const [isResizing, setIsResizing] = useState(false);
+  const dragRef = useRef<{ startClientX: number; startClientY: number; startWidth: number; startHeight: number } | null>(null);
+  const MIN_SIZE_PX = 70;
+
+  const width = override?.width ?? defaultWidthPx;
+  const height = override?.height ?? defaultHeightPx;
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    dragRef.current = { startClientX: e.clientX, startClientY: e.clientY, startWidth: width, startHeight: height };
+    setIsResizing(true);
+  };
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!dragRef.current) return;
+    e.stopPropagation();
+    e.preventDefault();
+    setOverride({
+      width: Math.max(MIN_SIZE_PX, dragRef.current.startWidth + (e.clientX - dragRef.current.startClientX)),
+      height: Math.max(MIN_SIZE_PX, dragRef.current.startHeight + (e.clientY - dragRef.current.startClientY)),
+    });
+  };
+  const onPointerUp = (e: React.PointerEvent) => {
+    e.stopPropagation();
+    dragRef.current = null;
+    setIsResizing(false);
+  };
+
+  return { width, height, isResizing, resizeHandlers: { onPointerDown, onPointerMove, onPointerUp } };
+}
+
+// The small corner handle that drives useResizablePanelSize — bottom-right, matching the panel's
+// top-left anchor (its top/left position is fixed) so growing the box always extends AWAY from the
+// anchor, never fighting the fixed position.
+function PanelResizeHandle({ handlers }: { handlers: ReturnType<typeof useResizablePanelSize>["resizeHandlers"] }) {
+  return (
+    <div
+      {...handlers}
+      title="גררו כדי לשנות את גודל הפאנל"
+      className="absolute -bottom-1 -right-1 h-4 w-4 flex items-end justify-end cursor-nwse-resize touch-none"
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24">
+        <circle cx="19" cy="19" r="2" fill="var(--color-amber-deep)" />
+        <circle cx="19" cy="12" r="2" fill="var(--color-amber-deep)" />
+        <circle cx="12" cy="19" r="2" fill="var(--color-amber-deep)" />
+      </svg>
+    </div>
+  );
+}
+
 // A vertical strip of circular controls that floats beside the selected photo — deliberately
 // rendered outside the canvas's own overflow-hidden ancestor (see the wrapping <div> around
 // canvasRef in the main component) so it, and the flyout sliders it opens, can bleed past the
@@ -330,42 +464,38 @@ function PhotoFloatingMenu({
   onTogglePan,
   onUpdate,
   onTrueSize,
-  onApplyShadowToAll,
   onDeleteSelected,
   onBringToFront,
   onSendToBack,
+  shadowPanelOpen,
+  onToggleShadowPanel,
+  photoAdjustPanelOpen,
+  onTogglePhotoAdjustPanel,
 }: {
   el: AlbumPhotoElement;
   panning: boolean;
   onTogglePan: () => void;
   onUpdate: (patch: Partial<AlbumPhotoElement>) => void;
   onTrueSize: () => void;
-  onApplyShadowToAll: () => void;
   onDeleteSelected: () => void;
   onBringToFront: () => void;
   onSendToBack: () => void;
+  // Whether the shadow/border sliders are showing — lifted to the parent since that panel no
+  // longer renders as a small flyout attached to this button (see PhotoShadowOverlayPanel) but as
+  // a layer positioned over the "עריכת תמונה" panel instead, which the parent owns.
+  shadowPanelOpen: boolean;
+  onToggleShadowPanel: () => void;
+  // Whether the "עריכת תמונה" color/tone adjustments panel is showing — no longer opens
+  // automatically the moment a photo is selected; this button opens/closes it manually, same
+  // lifted-to-the-parent pattern as shadowPanelOpen above.
+  photoAdjustPanelOpen: boolean;
+  onTogglePhotoAdjustPanel: () => void;
 }) {
-  const [openPanel, setOpenPanel] = useState<null | "opacity" | "blur" | "rotation" | "shadow" | "adjust">(null);
+  const [openPanel, setOpenPanel] = useState<null | "opacity" | "blur" | "rotation">(null);
   const onLeft = el.xPct + el.widthPct > 70;
   const side: "left" | "right" = onLeft ? "left" : "right";
   const rotationPct = Math.round((((el.rotation ?? 0) % 360) + 360) % 360 / 360 * 100);
   const toggle = (panel: typeof openPanel) => setOpenPanel((p) => (p === panel ? null : panel));
-
-  // מרחק/טשטוש (distance/blur) fall back to el.shadow (עוצמה) while unset, so an existing shadow
-  // that predates these two fields still shows a sensible starting point. Left purely reactive,
-  // that fallback would make dragging עוצמה visually drag distance/blur's thumbs along with it, so
-  // both are materialized into real, independent stored values the moment a shadow first becomes
-  // active (0 → positive) — from that tick on, all three are backed by separate fields.
-  const shadowActiveTrackRef = useRef<{ id: string; wasActive: boolean } | null>(null);
-  useEffect(() => {
-    const isActive = !!el.shadow;
-    const prev = shadowActiveTrackRef.current;
-    const justActivated = !prev || prev.id !== el.id ? isActive : isActive && !prev.wasActive;
-    if (justActivated && (el.shadowDistance === undefined || el.shadowBlur === undefined)) {
-      onUpdate({ shadowDistance: el.shadowDistance ?? el.shadow, shadowBlur: el.shadowBlur ?? el.shadow });
-    }
-    shadowActiveTrackRef.current = { id: el.id, wasActive: isActive };
-  }, [el.id, el.shadow, el.shadowDistance, el.shadowBlur, onUpdate]);
 
   return (
     <div
@@ -382,16 +512,9 @@ function PhotoFloatingMenu({
       onClick={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
     >
-      <div className="relative">
-        <CircleButton label="עריכת תמונה — חשיפה, ניגודיות, איזון לבן ועוד" active={openPanel === "adjust" || hasAdjustments(el)} onClick={() => toggle("adjust")}>
-          <IconAdjust />
-        </CircleButton>
-        {openPanel === "adjust" && (
-          <div className="absolute top-1/2 -translate-y-1/2" style={{ [side]: "calc(100% + 8px)" } as React.CSSProperties}>
-            <PhotoAdjustFloatingMenu el={el} onUpdate={onUpdate} />
-          </div>
-        )}
-      </div>
+      <CircleButton label="עריכת תמונה — חשיפה, ניגודיות, איזון לבן ועוד" active={photoAdjustPanelOpen} onClick={onTogglePhotoAdjustPanel}>
+        <IconAdjust />
+      </CircleButton>
       <CircleButton label="שחור-לבן" active={el.filter === "bw"} onClick={() => onUpdate({ filter: el.filter === "bw" ? "none" : "bw" })}>
         <IconBW />
       </CircleButton>
@@ -460,55 +583,9 @@ function PhotoFloatingMenu({
           </FlyoutPanel>
         )}
       </div>
-      <div className="relative">
-        <CircleButton label="צל וקו מתאר" active={openPanel === "shadow" || !!el.shadow || !!el.borderWidth} onClick={() => toggle("shadow")}>
-          <IconShadow />
-        </CircleButton>
-        {openPanel === "shadow" && (
-          <FlyoutPanel side={side} width={150}>
-            <MiniSlider label="עוצמת צל" value={el.shadow ?? 0} min={0} max={100} unit="%" onChange={(v) => onUpdate({ shadow: v })} />
-            {!!el.shadow && (
-              <>
-                <MiniSlider
-                  label="מרחק צל"
-                  value={el.shadowDistance ?? el.shadow ?? 0}
-                  min={0}
-                  max={100}
-                  unit="%"
-                  onChange={(v) => onUpdate({ shadowDistance: v })}
-                />
-                <MiniSlider
-                  label="טשטוש צל"
-                  value={el.shadowBlur ?? el.shadow ?? 0}
-                  min={0}
-                  max={100}
-                  unit="%"
-                  onChange={(v) => onUpdate({ shadowBlur: v })}
-                />
-              </>
-            )}
-            <MiniSlider label="קו מתאר" value={el.borderWidth ?? 0} min={0} max={50} unit="px" onChange={(v) => onUpdate({ borderWidth: v })} />
-            {!!el.borderWidth && (
-              <div className="flex items-center gap-1.5">
-                {BORDER_COLORS.map((c) => (
-                  <button
-                    key={c}
-                    onClick={() => onUpdate({ borderColor: c })}
-                    className="h-5 w-5 rounded-full"
-                    style={{ background: c, boxShadow: (el.borderColor ?? "#ffffff") === c ? "0 0 0 2px var(--color-amber-deep)" : "0 0 0 1px var(--color-line)" }}
-                  />
-                ))}
-              </div>
-            )}
-            <button
-              onClick={onApplyShadowToAll}
-              className="w-full rounded-lg py-1.5 text-[10px] font-semibold bg-chip text-ink-soft"
-            >
-              החל על כל התמונות בדף
-            </button>
-          </FlyoutPanel>
-        )}
-      </div>
+      <CircleButton label="צל וקו מתאר" active={shadowPanelOpen || !!el.shadow || !!el.borderWidth} onClick={onToggleShadowPanel}>
+        <IconShadow />
+      </CircleButton>
       <CircleButton label="קדימה — לשכבה העליונה" onClick={onBringToFront}>
         <IconToFront />
       </CircleButton>
@@ -518,6 +595,88 @@ function PhotoFloatingMenu({
       <CircleButton label="מחיקת התמונה/ות שנבחרו" onClick={onDeleteSelected}>
         <IconTrash />
       </CircleButton>
+    </div>
+  );
+}
+
+// The shadow/border-outline controls used to be a small flyout attached directly to the circle
+// menu's own "צל" button — moved out to render as its own layer positioned exactly over the
+// "עריכת תמונה" panel instead (see the parent's own photoShadowPanelOpen), since that flyout's 4-5
+// controls were the single biggest contributor to the circle menu needing to scroll or shrink.
+// This panel disappears the moment the photo is deselected (the parent resets photoShadowPanelOpen
+// whenever the anchor photo changes), and reopens fresh — not still open — next time it's clicked.
+function PhotoShadowOverlayPanel({
+  el,
+  onUpdate,
+  onApplyShadowToAll,
+  widthPx,
+}: {
+  el: AlbumPhotoElement;
+  onUpdate: (patch: Partial<AlbumPhotoElement>) => void;
+  onApplyShadowToAll: () => void;
+  widthPx: number;
+}) {
+  // מרחק/טשטוש (distance/blur) fall back to el.shadow (עוצמה) while unset, so an existing shadow
+  // that predates these two fields still shows a sensible starting point. Left purely reactive,
+  // that fallback would make dragging עוצמה visually drag distance/blur's thumbs along with it, so
+  // both are materialized into real, independent stored values the moment a shadow first becomes
+  // active (0 → positive) — from that tick on, all three are backed by separate fields.
+  const shadowActiveTrackRef = useRef<{ id: string; wasActive: boolean } | null>(null);
+  useEffect(() => {
+    const isActive = !!el.shadow;
+    const prev = shadowActiveTrackRef.current;
+    const justActivated = !prev || prev.id !== el.id ? isActive : isActive && !prev.wasActive;
+    if (justActivated && (el.shadowDistance === undefined || el.shadowBlur === undefined)) {
+      onUpdate({ shadowDistance: el.shadowDistance ?? el.shadow, shadowBlur: el.shadowBlur ?? el.shadow });
+    }
+    shadowActiveTrackRef.current = { id: el.id, wasActive: isActive };
+  }, [el.id, el.shadow, el.shadowDistance, el.shadowBlur, onUpdate]);
+
+  return (
+    <div
+      className="rounded-xl border border-line bg-white shadow-sheet p-3 space-y-2.5"
+      style={{ width: widthPx, boxShadow: "0 4px 16px rgba(46,49,66,0.3)" }}
+      onClick={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+    >
+      <p className="text-xs font-bold">צל וקו מתאר</p>
+      <MiniSlider label="עוצמת צל" value={el.shadow ?? 0} min={0} max={100} unit="%" onChange={(v) => onUpdate({ shadow: v })} />
+      {!!el.shadow && (
+        <>
+          <MiniSlider
+            label="מרחק צל"
+            value={el.shadowDistance ?? el.shadow ?? 0}
+            min={0}
+            max={100}
+            unit="%"
+            onChange={(v) => onUpdate({ shadowDistance: v })}
+          />
+          <MiniSlider
+            label="טשטוש צל"
+            value={el.shadowBlur ?? el.shadow ?? 0}
+            min={0}
+            max={100}
+            unit="%"
+            onChange={(v) => onUpdate({ shadowBlur: v })}
+          />
+        </>
+      )}
+      <MiniSlider label="קו מתאר" value={el.borderWidth ?? 0} min={0} max={50} unit="px" onChange={(v) => onUpdate({ borderWidth: v })} />
+      {!!el.borderWidth && (
+        <div className="flex items-center gap-1.5">
+          {BORDER_COLORS.map((c) => (
+            <button
+              key={c}
+              onClick={() => onUpdate({ borderColor: c })}
+              className="h-5 w-5 rounded-full"
+              style={{ background: c, boxShadow: (el.borderColor ?? "#ffffff") === c ? "0 0 0 2px var(--color-amber-deep)" : "0 0 0 1px var(--color-line)" }}
+            />
+          ))}
+        </div>
+      )}
+      <button onClick={onApplyShadowToAll} className="w-full rounded-lg py-1.5 text-[10px] font-semibold bg-chip text-ink-soft">
+        החל על כל התמונות בדף
+      </button>
     </div>
   );
 }
@@ -535,10 +694,28 @@ function AdjustSectionLabel({ children }: { children: React.ReactNode }) {
 // each slider actually does to the pixels, and why Texture/Clarity/Dehaze aren't here. Dropped
 // web's compact/maxHeightPx/widthPx props (phone-specific sizing) — not applicable to a fixed-size
 // Electron window.
-function PhotoAdjustFloatingMenu({ el, onUpdate }: { el: AlbumPhotoElement; onUpdate: (patch: Partial<AlbumPhotoElement>) => void }) {
+function PhotoAdjustFloatingMenu({
+  el,
+  onUpdate,
+  maxHeightPx,
+  widthPx,
+}: {
+  el: AlbumPhotoElement;
+  onUpdate: (patch: Partial<AlbumPhotoElement>) => void;
+  // Caller-driven size — see useResizablePanelSize/photoPanelSize where this is computed — so the
+  // panel's real-world size stays whatever the photographer last resized/dragged it to, not a
+  // fixed default forever.
+  maxHeightPx?: number;
+  widthPx?: number;
+}) {
   const hasAny = hasAdjustments(el);
   return (
-    <div className="rounded-xl border border-line bg-white shadow-sheet w-[280px] p-3 space-y-2.5" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
+    <div
+      className={`rounded-xl border border-line bg-white shadow-sheet ${widthPx != null ? "" : "w-[280px]"} p-3 space-y-2.5`}
+      style={{ ...(widthPx != null ? { width: `${widthPx}px` } : null), ...(maxHeightPx != null ? { maxHeight: `${maxHeightPx}px`, overflowY: "auto" as const } : null) }}
+      onClick={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+    >
       <div className="flex items-center justify-between">
         <p className="text-xs font-bold">עריכת תמונה</p>
         {hasAny && (
@@ -599,16 +776,10 @@ function OrnamentFloatingMenu({
   onBringToFront: () => void;
   onSendToBack: () => void;
 }) {
-  const onLeft = el.xPct + el.widthPct > 70;
   const rotationPct = Math.round((((el.rotation ?? 0) % 360) + 360) % 360 / 360 * 100);
   return (
     <div
-      className="absolute z-20 rounded-xl border border-line bg-white p-2.5 shadow-sheet space-y-2"
-      style={{
-        top: `${el.yPct}%`,
-        left: onLeft ? `calc(${el.xPct}% - 158px)` : `calc(${el.xPct + el.widthPct}% + 8px)`,
-        width: 150,
-      }}
+      className="w-[150px] rounded-xl border border-line bg-white p-2.5 shadow-sheet space-y-2"
       onClick={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
     >
@@ -683,18 +854,12 @@ function ShapeFloatingMenu({
   onSendToBack: () => void;
   onOpenMasksPicker: (rect: { top: number; left: number; width: number }) => void;
 }) {
-  const onLeft = el.xPct + el.widthPct > 70;
   const maskButtonRef = useRef<HTMLButtonElement>(null);
   const isLine = el.shapeStyle === "line";
   const linePx = Math.max(1, Math.min(100, Math.round((el.heightPct / 100) * albumHeightCm * PX_PER_CM)));
   return (
     <div
-      className="absolute z-20 rounded-xl border border-line bg-white p-2.5 shadow-sheet space-y-2"
-      style={{
-        top: `${el.yPct}%`,
-        left: onLeft ? `calc(${el.xPct}% - 158px)` : `calc(${el.xPct + el.widthPct}% + 8px)`,
-        width: 150,
-      }}
+      className="w-[150px] rounded-xl border border-line bg-white p-2.5 shadow-sheet space-y-2"
       onClick={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
     >
@@ -792,15 +957,9 @@ function TextFloatingMenu({
   onUpdate: (patch: Partial<AlbumTextElement>) => void;
   onDeleteSelected: () => void;
 }) {
-  const onLeft = el.xPct + el.widthPct > 70;
   return (
     <div
-      className="absolute z-20 rounded-xl border border-line bg-white p-2.5 shadow-sheet space-y-2"
-      style={{
-        top: `${el.yPct}%`,
-        left: onLeft ? `calc(${el.xPct}% - 158px)` : `calc(${el.xPct + el.widthPct}% + 8px)`,
-        width: 150,
-      }}
+      className="w-[150px] rounded-xl border border-line bg-white p-2.5 shadow-sheet space-y-2"
       onClick={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
     >
@@ -1328,6 +1487,8 @@ export default function AlbumSpreadCanvasEditor({
   onDeleteCustomOrnament,
   spreads,
   onSwitchSpread,
+  sidePanelOffset,
+  onSidePanelOffsetChange,
 }: {
   spread: GalleryAlbumSpreadRow;
   // Physical print dimensions plus the album's own configured safe-margin (cm) — used to size the
@@ -1362,6 +1523,12 @@ export default function AlbumSpreadCanvasEditor({
   // omitted-safe: no strip renders without it, same as the customOrnament* props above.
   spreads?: GalleryAlbumSpreadRow[];
   onSwitchSpread?: (spreadId: string) => void;
+  // The "עריכת תמונה" panel's drag offset, owned by the PARENT page (AlbumPageEditor, not this
+  // component) so it survives this editor's own full remount on every page switch — see
+  // sidePanelDrag's own comment for why that remount would otherwise reset a locally-owned offset
+  // back to (0,0).
+  sidePanelOffset: { x: number; y: number };
+  onSidePanelOffsetChange: (offset: { x: number; y: number }) => void;
 }) {
   const [elements, setElementsRaw] = useState<AlbumElement[]>(() => (mode === "custom" ? seedElementsFromPreset(spread) : spread.elements));
   // Undo history — ported from the web app's own editor: up to 20 past snapshots of `elements`. A
@@ -1566,6 +1733,103 @@ export default function AlbumSpreadCanvasEditor({
   // Kept for the few call sites that only make sense for a single element (info hint, delete
   // button, side-panel text controls) — any non-empty selection, not just size 1.
   const selected = selectedElements.length === 1 ? selectedElements[0] : null;
+
+  // Ported from the web app's own editor — the "עריכת תמונה" and shadow/border panels no longer
+  // open automatically the moment a photo is selected; each opens only via its own circle-menu
+  // button. Both reset back to closed whenever the selection moves to a different photo (or away
+  // from a photo entirely), so neither panel carries over onto a photo it was never opened for.
+  const [photoAdjustPanelOpen, setPhotoAdjustPanelOpen] = useState(false);
+  const [photoShadowPanelOpen, setPhotoShadowPanelOpen] = useState(false);
+  useEffect(() => {
+    setPhotoAdjustPanelOpen(false);
+    setPhotoShadowPanelOpen(false);
+  }, [anchorPhoto?.id]);
+  // The text styling panel (font/color/alignment/size) — toggled by its own circle-menu "T" button
+  // next to the selected text, same manual-toggle pattern as photoAdjustPanelOpen, not
+  // ornament/shape's always-open one, so a stray click on the canvas doesn't repeatedly pop the
+  // panel open every time a text box is merely selected.
+  const [textPanelOpen, setTextPanelOpen] = useState(false);
+  useEffect(() => {
+    setTextPanelOpen(false);
+  }, [selectedText?.id]);
+  const sidePanelOpen = !!selectedOrnament || !!selectedShape || (!!anchorPhoto && photoAdjustPanelOpen) || (!!selectedText && textPanelOpen);
+  // Keeps the side panel's last content around through its own fade-out — without this,
+  // deselecting would unmount the panel instantly (React removes it from the DOM the same render,
+  // giving a CSS transition nothing to animate), so the panel would just vanish instead of fading.
+  // Only ever written while something IS selected; while closing (sidePanelOpen false) it
+  // deliberately keeps showing the last real selection.
+  const [lastSideSelection, setLastSideSelection] = useState<
+    | { type: "ornament"; el: AlbumOrnamentElement }
+    | { type: "shape"; el: AlbumShapeElement }
+    | { type: "photo"; el: AlbumPhotoElement }
+    | { type: "text"; el: AlbumTextElement }
+    | null
+  >(null);
+  useEffect(() => {
+    if (selectedOrnament) setLastSideSelection({ type: "ornament", el: selectedOrnament });
+    else if (selectedShape) setLastSideSelection({ type: "shape", el: selectedShape });
+    else if (anchorPhoto) setLastSideSelection({ type: "photo", el: anchorPhoto });
+    else if (selectedText) setLastSideSelection({ type: "text", el: selectedText });
+  }, [selectedOrnament, selectedShape, anchorPhoto, selectedText]);
+  // The side panel is anchored to the canvas's own live position (not a hardcoded viewport
+  // offset), measured at REST (no slide applied) and re-measured only on window resize — never
+  // while `sidePanelOpen` is changing, since reading getBoundingClientRect() mid-CSS-transition
+  // would race the animation and could capture an in-between position.
+  const [canvasRestRect, setCanvasRestRect] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
+  useEffect(() => {
+    const measure = () => {
+      const r = canvasRef.current?.getBoundingClientRect();
+      if (r) setCanvasRestRect({ top: r.top, left: r.left, width: r.width, height: r.height });
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Fixed DEFAULT size for the photo-adjustments panel (27×14cm), freely resizable on top of that
+  // default via useResizablePanelSize's own corner-handle — see its comment for why the override
+  // persists across photo selections instead of resetting.
+  const PHOTO_PANEL_DEFAULT_HEIGHT_CM = 27;
+  const PHOTO_PANEL_DEFAULT_WIDTH_CM = 14;
+  const photoPanelDefaultHeightPx =
+    album.height_cm > 0 && canvasRestRect ? Math.max(80, PHOTO_PANEL_DEFAULT_HEIGHT_CM * (canvasRestRect.height / album.height_cm)) : 300;
+  const photoPanelDefaultWidthPx =
+    album.width_cm > 0 && canvasRestRect ? Math.max(80, PHOTO_PANEL_DEFAULT_WIDTH_CM * (canvasRestRect.width / album.width_cm)) : 150;
+  const photoPanelSize = useResizablePanelSize(photoPanelDefaultWidthPx, photoPanelDefaultHeightPx);
+  // The "עריכת תמונה" panel's default screen position is shifted 5cm further left than its plain
+  // canvas-edge anchor — computed here (not inline where it's used) so both that panel's own
+  // position AND the shadow overlay's (which shares this same left anchor) apply the identical shift.
+  const PHOTO_PANEL_LEFT_SHIFT_CM = 5;
+  const panelLeftShiftPx = album.width_cm > 0 && canvasRestRect ? (PHOTO_PANEL_LEFT_SHIFT_CM / album.width_cm) * canvasRestRect.width : 0;
+  // Free drag-anywhere offset for the ornament/shape/photo-adjust/text side panel — see
+  // useDraggablePanelOffset's own comment. One shared instance covers all four panel kinds since
+  // only one of them is ever mounted at a time (whichever lastSideSelection currently is).
+  // CONTROLLED by the parent page (AlbumPageEditor, via sidePanelOffset/onSidePanelOffsetChange)
+  // rather than owning its own state — once the photographer drags this panel somewhere on ANY
+  // page of the album, that position stays the new default on every OTHER page too, until dragged
+  // again. A plain internal useState here could never survive that: this whole editor remounts on
+  // every page switch (key={spread.id} in AlbumPageEditor, so each page starts with fresh
+  // elements/undo-state), which would silently reset any local offset back to (0,0). Lifting the
+  // value one level up, to a component that does NOT remount on page switches, is what makes it
+  // durable across them. (Position only — size is NOT lifted; photoPanelSize above keeps its own
+  // sticky-within-this-mount behavior.)
+  // The vertical drag range is clamped to the canvas's own top/bottom edges — the panel's default
+  // position sits right at the canvas's own top edge (see panelTopPx at the render site), and
+  // dragging it must never be able to push it up past that edge nor down past the canvas's own
+  // bottom edge. Only clamps the Y axis; X is still free to drag anywhere. Scoped to the PHOTO
+  // panel specifically via lastSideSelection — the ornament/shape/text panels use a different
+  // (centered, content-sized) default position this same offset math doesn't apply to, so they're
+  // left free/unclamped.
+  const sidePanelDrag = useDraggablePanelOffset(
+    "sidePanel",
+    (offset) => {
+      if (!canvasRestRect || lastSideSelection?.type !== "photo") return offset;
+      const maxOffsetY = Math.max(0, canvasRestRect.height - photoPanelSize.height);
+      return { x: offset.x, y: Math.max(0, Math.min(offset.y, maxOffsetY)) };
+    },
+    { offset: sidePanelOffset, onChange: onSidePanelOffsetChange }
+  );
+
   const usedPhotoIds = new Set(elements.filter((e): e is AlbumPhotoElement => e.type === "photo" && !!e.photoId).map((e) => e.photoId as string));
   const favoritePhotos = (() => {
     const base = photos.filter((p) => p.is_favorite);
@@ -3035,42 +3299,120 @@ export default function AlbumSpreadCanvasEditor({
             }}
             onUpdate={(patch) => applyToSelectedPhotos(patch)}
             onTrueSize={() => showTrueSize(selectedPhotos.filter((p) => p.photoId).map((p) => p.id))}
-            onApplyShadowToAll={() => applyShadowToAllPhotos(anchorPhoto.id)}
             onDeleteSelected={removeSelected}
             onBringToFront={() => bringToFront(anchorPhoto.id)}
             onSendToBack={() => sendToBack(anchorPhoto.id)}
+            shadowPanelOpen={photoShadowPanelOpen}
+            onToggleShadowPanel={() => setPhotoShadowPanelOpen((v) => !v)}
+            photoAdjustPanelOpen={photoAdjustPanelOpen}
+            onTogglePhotoAdjustPanel={() => setPhotoAdjustPanelOpen((v) => !v)}
           />
         )}
-        {selectedOrnament && (
-          <OrnamentFloatingMenu
-            el={selectedOrnament}
-            onUpdate={(patch) => updateElement(selectedOrnament.id, patch)}
-            onDeleteSelected={removeSelected}
-            onBringToFront={() => bringToFront(selectedOrnament.id)}
-            onSendToBack={() => sendToBack(selectedOrnament.id)}
-          />
+        {/* A single dedicated toggle for the text styling panel, positioned at the canvas's own top
+            edge (not tracking the selected text box's position) — same "stop making panels jump
+            around when the selection changes" reasoning as the big side panel below. Text has no
+            multi-button circular strip of its own the way photos do; one button is enough since
+            everything else (color/font/align/size/delete) lives inside the panel this opens. */}
+        {selectedText && canvasRestRect && (
+          <div className="fixed z-20" style={{ top: canvasRestRect.top + 8, right: "8px" }}>
+            <CircleButton label="עריכת טקסט — גופן, צבע, יישור ועוד" active={textPanelOpen} onClick={() => setTextPanelOpen((v) => !v)}>
+              <span className="font-display font-bold" style={{ fontSize: 15 }}>T</span>
+            </CircleButton>
+          </div>
         )}
-        {selectedShape && (
-          <ShapeFloatingMenu
-            el={selectedShape}
-            albumHeightCm={album.height_cm}
-            onUpdate={(patch) => updateElement(selectedShape.id, patch)}
-            onDeleteSelected={removeSelected}
-            onBringToFront={() => bringToFront(selectedShape.id)}
-            onSendToBack={() => sendToBack(selectedShape.id)}
-            onOpenMasksPicker={(rect) => {
-              setMasksPanelRect(rect);
-              setMasksPickerOpen(true);
+        {lastSideSelection && canvasRestRect && (() => {
+          // A single fixed screen position — never computed from the selected element's own
+          // position, so the panel doesn't jump around every time a different element is selected.
+          const openOnLeft = true;
+          const panelWidth = lastSideSelection.type === "photo" ? photoPanelSize.width : 150;
+          const photoAdjustMaxHeightPx = lastSideSelection.type === "photo" ? photoPanelSize.height : undefined;
+          // Sits right at the canvas's own top edge for the photo panel; ornament/shape/text keep
+          // the canvas-centered fallback. sidePanelDrag's own clamp (see its declaration) keeps the
+          // photo panel from being dragged past the canvas's own top/bottom edges from here.
+          const centerY = canvasRestRect.top + canvasRestRect.height / 2;
+          const panelTopPx = lastSideSelection.type === "photo" ? canvasRestRect.top : centerY;
+          // Suspends the open/close transition during EITHER a live drag OR a live resize — both
+          // change this element's own size/position every pointermove, and a CSS transition on
+          // those same properties would otherwise fight the real-time updates.
+          const suspendTransition = sidePanelDrag.isDragging || photoPanelSize.isResizing;
+          return (
+          <div
+            className="fixed z-20"
+            style={{
+              top: panelTopPx,
+              left: openOnLeft
+                ? Math.max(8, canvasRestRect.left + 8 - (lastSideSelection.type === "photo" ? panelLeftShiftPx : 0))
+                : Math.max(canvasRestRect.left + 8, Math.min(canvasRestRect.left + canvasRestRect.width - panelWidth - 8, window.innerWidth - panelWidth - 16)),
+              // The open/close slide-in transform composes with the free drag offset by appending a
+              // second translate() — CSS applies multiple translate()s additively, so the panel
+              // still opens/closes with its usual animation AND stays wherever it was last dragged to.
+              transform: `${
+                photoAdjustMaxHeightPx != null
+                  ? sidePanelOpen ? "translateX(0)" : "translateX(10px)"
+                  : sidePanelOpen ? "translateY(-50%) translateX(0)" : "translateY(-50%) translateX(10px)"
+              } translate(${sidePanelDrag.offset.x}px, ${sidePanelDrag.offset.y}px)`,
+              opacity: sidePanelOpen ? 1 : 0,
+              pointerEvents: sidePanelOpen ? "auto" : "none",
+              transition: suspendTransition ? "none" : "opacity 220ms ease, transform 220ms ease",
             }}
-          />
-        )}
-        {selectedText && (
-          <TextFloatingMenu
-            el={selectedText}
-            album={album}
-            onUpdate={(patch) => updateElement(selectedText.id, patch)}
-            onDeleteSelected={removeSelected}
-          />
+          >
+            <PanelDragGrip handlers={sidePanelDrag.gripHandlers} />
+            {lastSideSelection.type === "photo" && <PanelResizeHandle handlers={photoPanelSize.resizeHandlers} />}
+            {lastSideSelection.type === "ornament" ? (
+              <OrnamentFloatingMenu
+                el={lastSideSelection.el}
+                onUpdate={(patch) => updateElement(lastSideSelection.el.id, patch)}
+                onDeleteSelected={removeSelected}
+                onBringToFront={() => bringToFront(lastSideSelection.el.id)}
+                onSendToBack={() => sendToBack(lastSideSelection.el.id)}
+              />
+            ) : lastSideSelection.type === "shape" ? (
+              <ShapeFloatingMenu
+                el={lastSideSelection.el}
+                albumHeightCm={album.height_cm}
+                onUpdate={(patch) => updateElement(lastSideSelection.el.id, patch)}
+                onDeleteSelected={removeSelected}
+                onBringToFront={() => bringToFront(lastSideSelection.el.id)}
+                onSendToBack={() => sendToBack(lastSideSelection.el.id)}
+                onOpenMasksPicker={(rect) => {
+                  setMasksPanelRect(rect);
+                  setMasksPickerOpen(true);
+                }}
+              />
+            ) : lastSideSelection.type === "text" ? (
+              <TextFloatingMenu el={lastSideSelection.el} album={album} onUpdate={(patch) => updateElement(lastSideSelection.el.id, patch)} onDeleteSelected={removeSelected} />
+            ) : (
+              <PhotoAdjustFloatingMenu
+                el={lastSideSelection.el}
+                onUpdate={(patch) => applyToSelectedPhotos(patch)}
+                maxHeightPx={photoAdjustMaxHeightPx}
+                widthPx={panelWidth}
+              />
+            )}
+          </div>
+          );
+        })()}
+        {/* The shadow/border overlay — appears as a layer ON TOP of the "עריכת תמונה" panel (same
+            position/left-shift/drag-offset, higher z-index) rather than as a small flyout attached
+            to the circle menu's own "צל" button. Only mounted while open — it disappears the
+            instant the photo is deselected, since photoShadowPanelOpen itself resets to false
+            whenever anchorPhoto changes, and the next click on "צל" reopens it fresh. */}
+        {photoShadowPanelOpen && anchorPhoto && canvasRestRect && (
+          <div
+            className="fixed z-[25]"
+            style={{
+              top: canvasRestRect.top,
+              left: Math.max(8, canvasRestRect.left + 8 - panelLeftShiftPx),
+              transform: `translate(${sidePanelDrag.offset.x}px, ${sidePanelDrag.offset.y}px)`,
+            }}
+          >
+            <PhotoShadowOverlayPanel
+              el={anchorPhoto}
+              onUpdate={(patch) => applyToSelectedPhotos(patch)}
+              onApplyShadowToAll={() => applyShadowToAllPhotos(anchorPhoto.id)}
+              widthPx={photoPanelSize.width}
+            />
+          </div>
         )}
         </div>
         </div>

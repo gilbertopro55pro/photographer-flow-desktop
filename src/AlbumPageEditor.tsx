@@ -57,6 +57,13 @@ export default function AlbumPageEditor({
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [exportingPsd, setExportingPsd] = useState(false);
+  // The "עריכת תמונה" panel's free-drag offset — owned HERE (not inside AlbumSpreadCanvasEditor)
+  // specifically because that component remounts on every page switch (key={spread.id} below), so
+  // a locally-owned offset would silently reset back to (0,0) on every switch. This component does
+  // NOT remount on page switch (AlbumBrowser only ever re-renders it with new props), so lifting
+  // the value one level up here is what makes it durable across pages. Ported from the web app's
+  // own editor, where the equivalent state lives in GalleryManageView for the identical reason.
+  const [sidePanelOffset, setSidePanelOffset] = useState({ x: 0, y: 0 });
   const [exportPsdStatus, setExportPsdStatus] = useState<string | null>(null);
 
   useEffect(() => {
@@ -329,6 +336,15 @@ export default function AlbumPageEditor({
   return (
     <>
       <AlbumSpreadCanvasEditor
+        // Forces a full remount whenever the page-switcher strip changes `spread` — this component
+        // never re-derives its own elements/background*/undo state from a changed `spread` PROP
+        // (every one of those is seeded via a useState lazy initializer, which only runs once), so
+        // without this key, switching pages via the strip would keep showing the PREVIOUS page's
+        // content. Matches the web app's own AlbumSpreadCanvasEditor mount, which is keyed the same
+        // way for the identical reason — and is exactly why sidePanelOffset below has to be owned
+        // by THIS component (AlbumPageEditor), one level above the remount boundary, not by
+        // AlbumSpreadCanvasEditor itself.
+        key={spread.id}
         spread={spread}
         album={{ width_cm: spread.width_cm ?? album.width_cm, height_cm: spread.height_cm ?? album.height_cm, safe_margin_cm: album.safe_margin_cm }}
         photos={photos}
@@ -348,6 +364,8 @@ export default function AlbumPageEditor({
         onDeleteCustomOrnament={handleDeleteCustomOrnament}
         spreads={spreads}
         onSwitchSpread={onSwitchSpread}
+        sidePanelOffset={sidePanelOffset}
+        onSidePanelOffsetChange={setSidePanelOffset}
       />
       {/* Floating above the editor's own z-[80] backdrop — the real single-page PSD export this
           native app adds over the web version (see PageDetail's removal in AlbumBrowser.tsx for
