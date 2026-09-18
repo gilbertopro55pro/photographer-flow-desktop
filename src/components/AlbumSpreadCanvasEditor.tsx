@@ -1841,16 +1841,21 @@ export default function AlbumSpreadCanvasEditor({
     }
     return base;
   })();
+  // The album's cover page (always sort_order 0) is exempt from the cross-page "already used"
+  // exclusion below — a cover photo is commonly also placed again inside the album itself, so it
+  // shouldn't disappear from either picker just because it's the cover.
+  const isCoverPage = spread.sort_order === 0;
   // Photos already placed on OTHER pages of the album are dropped entirely (not just badged) so a
   // photo used earlier in the book never shows up as an option on a later page — except when
-  // picking a page BACKGROUND, which is a different, non-exclusive kind of "use".
+  // picking a page BACKGROUND (a different, non-exclusive kind of "use"), or on the cover page.
   const pickerPhotosBase = showAllInPicker || favoritePhotos.length === 0 ? photos : favoritePhotos;
-  const pickerPhotos = pickingBackground ? pickerPhotosBase : pickerPhotosBase.filter((p) => !usedElsewhere?.has(p.id));
-  // Drag-to-frame panel: cross-page duplicates are always excluded; same-page duplicates are
-  // excluded by default (so a placed photo disappears once dragged in) but "הצג הכל" reveals them
-  // too, badged ✅, purely for review. Grouped by folder/tab when the gallery actually has any;
-  // otherwise every favorite sits in one flat, unlabeled group.
-  const dragPanelPool = favoritePhotos.filter((p) => !usedElsewhere?.has(p.id) && (showAllDragPanel || !usedPhotoIds.has(p.id)));
+  const pickerPhotos = pickingBackground || isCoverPage ? pickerPhotosBase : pickerPhotosBase.filter((p) => !usedElsewhere?.has(p.id));
+  // Drag-to-frame panel: cross-page duplicates are always excluded (except on the cover page);
+  // same-page duplicates are excluded by default (so a placed photo disappears once dragged in)
+  // but "הצג הכל" reveals everything, badged ✅, purely for review — including same-page AND
+  // cross-page duplicates alike once that toggle is on. Grouped by folder/tab when the gallery
+  // actually has any; otherwise every favorite sits in one flat, unlabeled group.
+  const dragPanelPool = favoritePhotos.filter((p) => showAllDragPanel || ((isCoverPage || !usedElsewhere?.has(p.id)) && !usedPhotoIds.has(p.id)));
   const dragPanelGroups: { id: string; name: string | null; items: PhotoWithUrl[] }[] =
     folders && folders.length > 0
       ? [
@@ -2490,37 +2495,54 @@ export default function AlbumSpreadCanvasEditor({
       const lockAspect = el?.type === "photo" && !!el.lockAspect;
       const allowOverflow = el?.type === "shape" && (el.shapeStyle === "rect-outline" || el.shapeStyle === "circle-outline" || el.shapeStyle === "line");
       const handle = drag.resizeHandle ?? "se";
-      let primaryResult = computeResize(handle, primaryStart, dxPct, dyPct, lockAspect, allowOverflow, e.altKey);
       const isSingleResize = Object.keys(drag.groupStart).length === 1;
+
       if (isSingleResize) {
-        // Only a single-frame resize gets edge guides — a group resize already has its own
-        // proportional-scale math below and mixing in per-edge snapping there would fight it.
+        let primaryResult = computeResize(handle, primaryStart, dxPct, dyPct, lockAspect, allowOverflow, e.altKey);
         const others = elements.filter((x) => x.id !== drag.id);
         const { guides: resizeGuides, box: snappedBox, marginSnapX, marginSnapY } = computeResizeGuides(handle, primaryResult, others, marginInsetPct);
         setGuides(resizeGuides);
         setMarginSnap({ x: marginSnapX, y: marginSnapY });
         primaryResult = snappedBox;
-      } else {
-        setGuides([]);
-        setMarginSnap({ x: false, y: false });
+        setElements((prev) => prev.map((e2) => (e2.id === drag.id ? { ...e2, ...primaryResult } : e2)));
+        return;
       }
-      const scaleW = primaryStart.widthPct > 0 ? primaryResult.widthPct / primaryStart.widthPct : 1;
-      const scaleH = primaryStart.heightPct > 0 ? primaryResult.heightPct / primaryStart.heightPct : 1;
+
+      // Group resize (2+ selected): treated as one rigid frame — ported from the web app's own
+      // fix for a real bug report. The PREVIOUS approach (scaling each photo by the same factor,
+      // anchored on its OWN center) meant the GAPS between photos weren't preserved: two adjacent
+      // photos with a small gap between them, both growing around their own separate centers
+      // instead of moving apart together, would start overlapping well before either photo
+      // individually grew by much. Fixed by running computeResize on the GROUP's own shared
+      // bounding box instead of any individual photo's box, then mapping every selected photo by
+      // its own fractional position/size WITHIN that shared box into the new one — every photo's
+      // position AND size scale together proportionally with the whole selection, so relative
+      // spacing is preserved exactly regardless of which handle was actually grabbed.
+      setGuides([]);
+      setMarginSnap({ x: false, y: false });
+      const starts = Object.values(drag.groupStart);
+      const groupStartBox = {
+        xPct: Math.min(...starts.map((s) => s.xPct)),
+        yPct: Math.min(...starts.map((s) => s.yPct)),
+        widthPct: Math.max(...starts.map((s) => s.xPct + s.widthPct)) - Math.min(...starts.map((s) => s.xPct)),
+        heightPct: Math.max(...starts.map((s) => s.yPct + s.heightPct)) - Math.min(...starts.map((s) => s.yPct)),
+      };
+      const groupResult = computeResize(handle, groupStartBox, dxPct, dyPct, lockAspect, allowOverflow, e.altKey);
+      const scaleW = groupStartBox.widthPct > 0 ? groupResult.widthPct / groupStartBox.widthPct : 1;
+      const scaleH = groupStartBox.heightPct > 0 ? groupResult.heightPct / groupStartBox.heightPct : 1;
       setElements((prev) =>
         prev.map((e2) => {
           const gs = drag.groupStart[e2.id];
           if (!gs) return e2;
-          if (e2.id === drag.id) return { ...e2, ...primaryResult };
-          // Every other selected photo scales by the same factor, anchored on its own center —
-          // simpler and less surprising than trying to replicate the primary's exact handle
-          // semantics (top-left-fixed etc) across frames that started at different positions.
+          const relX = groupStartBox.widthPct > 0 ? (gs.xPct - groupStartBox.xPct) / groupStartBox.widthPct : 0;
+          const relY = groupStartBox.heightPct > 0 ? (gs.yPct - groupStartBox.yPct) / groupStartBox.heightPct : 0;
           const newW = Math.max(8, Math.min(100, gs.widthPct * scaleW));
           const newH = Math.max(6, Math.min(100, gs.heightPct * scaleH));
-          const cx = gs.xPct + gs.widthPct / 2;
-          const cy = gs.yPct + gs.heightPct / 2;
-          const nx = Math.max(0, Math.min(cx - newW / 2, 100 - newW));
-          const ny = Math.max(0, Math.min(cy - newH / 2, 100 - newH));
-          return { ...e2, xPct: nx, yPct: ny, widthPct: newW, heightPct: newH };
+          const nx = groupResult.xPct + relX * groupResult.widthPct;
+          const ny = groupResult.yPct + relY * groupResult.heightPct;
+          const clampedX = Math.max(0, Math.min(nx, 100 - newW));
+          const clampedY = Math.max(0, Math.min(ny, 100 - newH));
+          return { ...e2, xPct: clampedX, yPct: clampedY, widthPct: newW, heightPct: newH };
         })
       );
       return;
@@ -2964,11 +2986,13 @@ export default function AlbumSpreadCanvasEditor({
                       startDrag(e, el, "move", undefined, group);
                     }}
                     onDoubleClick={(e) => {
-                      // A double-click is a fast shortcut into "position image" mode — the same
-                      // mode the floating menu's מיקום התמונה button opens — so a following drag
-                      // pans the photo inside its own fixed frame instead of moving the frame.
+                      // A double-click centers the photo within its frame directly (no extra click
+                      // needed) and also drops straight into "position image" mode — the same mode
+                      // the floating menu's מיקום התמונה button opens — so a following drag pans the
+                      // now-centered photo inside its own fixed frame instead of moving the frame.
                       if (!photo) return;
                       e.stopPropagation();
+                      updateElement(el.id, { focalX: 50, focalY: 50 });
                       setSelectedIds(new Set([el.id]));
                       setPanModeId(el.id);
                     }}
@@ -3696,7 +3720,11 @@ export default function AlbumSpreadCanvasEditor({
                     {group.name && <p className="text-[10px] font-semibold text-ink-soft mb-1">{group.name}</p>}
                     <div className="grid grid-cols-5 gap-1.5">
                       {group.items.map((p) => {
-                        const alreadyUsed = usedPhotoIds.has(p.id);
+                        // Same-page OR cross-page use — both are only ever visible here at all once
+                        // showAllDragPanel reveals them, so both need the same ✅ "already used"
+                        // badge, not just the same-page case. Cover page is exempt from the
+                        // cross-page half, matching pickerPhotos/dragPanelPool above.
+                        const alreadyUsed = usedPhotoIds.has(p.id) || (!isCoverPage && !!usedElsewhere?.has(p.id));
                         return (
                           <div
                             key={p.id}
