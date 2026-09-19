@@ -181,7 +181,10 @@ function ShapeOverlay({ el }: { el: AlbumShapeElement }) {
 }
 
 function BackgroundLayer({ background }: { background: { url: string; blur: number; opacity: number } | null | undefined }) {
-  if (!background) return null;
+  // A background photo missing its own preview has url === "" — an <img src=""> would resolve to
+  // THIS page's own URL and render Chromium's broken-image glyph, so this guards on the URL
+  // itself, not just whether a background object was passed at all.
+  if (!background?.url) return null;
   return (
     // eslint-disable-next-line jsx-a11y/alt-text
     <img

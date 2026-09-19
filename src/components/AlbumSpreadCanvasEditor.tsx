@@ -2899,7 +2899,7 @@ export default function AlbumSpreadCanvasEditor({
             ...(canvasSizePx ? { width: `${canvasSizePx.width}px`, height: `${canvasSizePx.height}px` } : {}),
           }}
         >
-          {backgroundPhoto && (
+          {backgroundPhoto?.url && (
             /* eslint-disable-next-line @next/next/no-img-element */
             <img
               src={backgroundPhoto.url}
@@ -3045,7 +3045,7 @@ export default function AlbumSpreadCanvasEditor({
                       transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
                     }}
                   >
-                    {photo ? (
+                    {photo?.url ? (
                       /* eslint-disable-next-line @next/next/no-img-element */
                       <img
                         src={photo.url}
@@ -3486,7 +3486,7 @@ export default function AlbumSpreadCanvasEditor({
 
         <div className="mt-3 pt-3 border-t border-line">
           <p className="text-[11px] font-bold text-ink-soft mb-1.5">רקע לכל העמוד</p>
-          {backgroundPhoto ? (
+          {backgroundPhoto?.url ? (
             <div className="space-y-2">
               <div className="relative h-16 rounded-lg overflow-hidden">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -3782,12 +3782,20 @@ export default function AlbumSpreadCanvasEditor({
                             }}
                             className="relative aspect-square rounded-md overflow-hidden cursor-grab active:cursor-grabbing"
                             style={{
+                              background: "var(--color-line)",
                               boxShadow: dragPanelSelectedIds.has(p.id) ? "0 0 0 2px var(--color-amber-deep)" : "0 0 0 1px var(--color-line)",
                               opacity: alreadyUsed ? 0.5 : 1,
                             }}
                           >
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img src={p.url} alt="" draggable={false} className="w-full h-full object-cover pointer-events-none" />
+                            {/* A favorite photo missing its own preview (e.g. never finished
+                                processing) has p.url === "" — an <img src=""> would resolve to
+                                THIS page's own URL and render Chromium's broken-image glyph, which
+                                is exactly the bug this guard exists to avoid; the plain gray
+                                background above shows instead. */}
+                            {p.url && (
+                              /* eslint-disable-next-line @next/next/no-img-element */
+                              <img src={p.url} alt="" draggable={false} className="w-full h-full object-cover pointer-events-none" />
+                            )}
                             {dragPanelSelectedIds.has(p.id) && (
                               <span
                                 className="absolute top-0.5 left-0.5 h-3.5 w-3.5 rounded-full flex items-center justify-center"
@@ -3854,10 +3862,17 @@ export default function AlbumSpreadCanvasEditor({
                       key={p.id}
                       onClick={() => (addingMultiplePhotos ? toggleMultiPhoto(p.id) : choosePhoto(p.id))}
                       className="relative aspect-square rounded-lg overflow-hidden"
-                      style={{ boxShadow: multiIdx !== -1 ? "0 0 0 2px var(--color-paper), 0 0 0 4px var(--color-amber-deep)" : "0 0 0 1px var(--color-line)" }}
+                      style={{
+                        background: "var(--color-line)",
+                        boxShadow: multiIdx !== -1 ? "0 0 0 2px var(--color-paper), 0 0 0 4px var(--color-amber-deep)" : "0 0 0 1px var(--color-line)",
+                      }}
                     >
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={p.url} alt="" className="w-full h-full object-cover" />
+                      {/* A favorite photo missing its own preview has p.url === "" — see the drag
+                          panel's own identical guard/comment above. */}
+                      {p.url && (
+                        /* eslint-disable-next-line @next/next/no-img-element */
+                        <img src={p.url} alt="" className="w-full h-full object-cover" />
+                      )}
                       {multiIdx !== -1 && (
                         <span
                           className="absolute top-0.5 right-0.5 h-4 w-4 rounded-full flex items-center justify-center text-[9px] font-data"
