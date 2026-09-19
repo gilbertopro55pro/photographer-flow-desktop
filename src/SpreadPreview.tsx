@@ -97,9 +97,15 @@ function PhotoTile({ el, url }: { el: AlbumPhotoElement; url: string | undefined
         // drawn on the parent, which only became visible once opacity/blur made the photo itself
         // partially see-through). An inset box-shadow paints as this div's own decoration, always
         // above its z-index:auto siblings drawn earlier in source order.
+        //
+        // Width is scaled relative to the album's 1600pt reference canvas (same convention as
+        // TextOverlay's fontSize below) instead of a raw px value — this preview renders at
+        // whatever small thumbnail width the grid/page-switcher gives it, and a border authored
+        // to look thin on the full-size editing canvas otherwise stays visually just as many
+        // pixels wide here, i.e. disproportionately thick relative to the shrunken photo.
         <div
           className="absolute inset-0 pointer-events-none"
-          style={{ boxShadow: `inset 0 0 0 ${el.borderWidth}px ${el.borderColor ?? "#fff"}` }}
+          style={{ boxShadow: `inset 0 0 0 calc(${el.borderWidth} / 1600 * 100cqw) ${el.borderColor ?? "#fff"}` }}
         />
       )}
     </div>
@@ -121,8 +127,9 @@ function OrnamentOverlay({ el, customUrl }: { el: AlbumOrnamentElement; customUr
         height: `${el.heightPct}%`,
         opacity: (el.opacity ?? 100) / 100,
         transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
-        outline: el.borderWidth ? `${el.borderWidth}px solid ${el.borderColor ?? "#fff"}` : "none",
-        outlineOffset: el.borderWidth ? `-${el.borderWidth}px` : undefined,
+        // Same 1600pt-reference cqw scaling as PhotoTile's border above — see its comment.
+        outline: el.borderWidth ? `calc(${el.borderWidth} / 1600 * 100cqw) solid ${el.borderColor ?? "#fff"}` : "none",
+        outlineOffset: el.borderWidth ? `calc(${el.borderWidth} / -1600 * 100cqw)` : undefined,
       }}
     >
       {customTint ? (

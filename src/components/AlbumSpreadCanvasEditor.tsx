@@ -1196,6 +1196,28 @@ export function fitFramesToSafeArea(frames: AlbumFrame[], marginInsetPct: { x: n
   }));
 }
 
+// Ported from the web app's own src/lib/albumRender.ts — replaces the older `object-fit: cover` +
+// a separate `transform: scale()` technique this file used to use for photo zoom. That older
+// technique had a real bug: `object-position` computes its own pan range from the PRE-scale
+// cover-fit geometry (the browser has no way to know a later `transform: scale()` will make the
+// image bigger), so whichever axis had zero "cover" slack before zooming (fully matched the
+// frame's own edge-to-edge) still had zero pan range AFTER zooming too — the zoomed-in photo could
+// only ever be panned in ONE direction, not both, depending on the frame/photo aspect-ratio
+// mismatch. This computes the crop/position explicitly instead: zoom scales the COVER-FIT SIZE
+// itself (both width and height together, before figuring out left/top), so the pan range on
+// BOTH axes correctly grows once zoomed in, matching how zoom actually behaves in every other
+// photo-cropping tool.
+function computePhotoFraming(imgAspect: number, frameAspect: number, zoomPct: number, focalXPct: number, focalYPct: number) {
+  const zf = zoomPct && zoomPct > 100 ? zoomPct / 100 : 1;
+  const coverWidthPct = imgAspect >= frameAspect ? 100 * (imgAspect / frameAspect) : 100;
+  const coverHeightPct = imgAspect >= frameAspect ? 100 : 100 * (frameAspect / imgAspect);
+  const widthPct = coverWidthPct * zf;
+  const heightPct = coverHeightPct * zf;
+  const leftPct = -(widthPct - 100) * (focalXPct / 100);
+  const topPct = -(heightPct - 100) * (focalYPct / 100);
+  return { widthPct, heightPct, leftPct, topPct };
+}
+
 // adjust/sharpness params ported from the web app's own editor (src/lib/albumRender.ts) — the
 // url(#...) filter ids reference the <svg><defs> block rendered alongside the canvas.
 export function cssFilterFor(
@@ -1688,6 +1710,11 @@ export default function AlbumSpreadCanvasEditor({
   // so circular-menu actions and resize can apply to the whole group; text elements stay
   // single-select only (a Set of size 1 for those).
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // Each photo's own real aspect ratio (naturalWidth/naturalHeight), measured once via the <img>'s
+  // own onLoad — feeds computePhotoFraming so zoom/pan is computed against the photo's TRUE shape,
+  // not the frame's own (before the image has actually loaded, the frame's own aspect ratio is
+  // used as a same-shape placeholder so nothing crops oddly for one render tick).
+  const [photoAspects, setPhotoAspects] = useState<Record<string, number>>({});
   // Live rectangle while dragging a selection marquee on empty canvas — null when not marqueeing.
   const [marqueeBox, setMarqueeBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [frameTargetId, setFrameTargetId] = useState<string | null>(null);
@@ -3198,31 +3225,45 @@ export default function AlbumSpreadCanvasEditor({
                     }}
                   >
                     {photo?.url ? (
-                      /* eslint-disable-next-line @next/next/no-img-element */
-                      <img
-                        src={photo.url}
-                        alt=""
-                        className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-                        style={{
-                          objectPosition: `${el.focalX}% ${el.focalY}%`,
-                          filter: cssFilterFor(el.filter, el.blur, { id: el.id, adj: el }, el.sharpness),
-                          opacity: (el.opacity ?? 100) / 100,
-                          // Zoom is a crop-level operation (how much of the image shows inside the
-                          // already-fixed, already-rotated frame) so it stays on the image itself,
-                          // separate from the frame's own rotation above.
-                          transform: el.zoom && el.zoom !== 100 ? `scale(${el.zoom / 100})` : undefined,
-                          ...(el.maskId
-                            ? {
-                                WebkitMaskImage: maskCssUrl(findMask(el.maskId)?.svg ?? ""),
-                                maskImage: maskCssUrl(findMask(el.maskId)?.svg ?? ""),
-                                WebkitMaskSize: "100% 100%",
-                                maskSize: "100% 100%",
-                                WebkitMaskRepeat: "no-repeat",
-                                maskRepeat: "no-repeat",
-                              }
-                            : null),
-                        }}
-                      />
+                      (() => {
+                        const frameAspect = ((el.widthPct * album.width_cm) / (el.heightPct * album.height_cm)) || 1;
+                        const imgAspect = photoAspects[photo.id] ?? frameAspect;
+                        const framing = computePhotoFraming(imgAspect, frameAspect, el.zoom ?? 100, el.focalX, el.focalY);
+                        return (
+                          /* eslint-disable-next-line @next/next/no-img-element */
+                          <img
+                            src={photo.url}
+                            alt=""
+                            className="absolute pointer-events-none"
+                            onLoad={(e) => {
+                              const w = e.currentTarget.naturalWidth;
+                              const h = e.currentTarget.naturalHeight;
+                              if (!w || !h) return;
+                              setPhotoAspects((prev) => (prev[photo.id] ? prev : { ...prev, [photo.id]: w / h }));
+                            }}
+                            style={{
+                              width: `${framing.widthPct}%`,
+                              height: `${framing.heightPct}%`,
+                              left: `${framing.leftPct}%`,
+                              top: `${framing.topPct}%`,
+                              maxWidth: "none",
+                              maxHeight: "none",
+                              filter: cssFilterFor(el.filter, el.blur, { id: el.id, adj: el }, el.sharpness),
+                              opacity: (el.opacity ?? 100) / 100,
+                              ...(el.maskId
+                                ? {
+                                    WebkitMaskImage: maskCssUrl(findMask(el.maskId)?.svg ?? ""),
+                                    maskImage: maskCssUrl(findMask(el.maskId)?.svg ?? ""),
+                                    WebkitMaskSize: "100% 100%",
+                                    maskSize: "100% 100%",
+                                    WebkitMaskRepeat: "no-repeat",
+                                    maskRepeat: "no-repeat",
+                                  }
+                                : null),
+                            }}
+                          />
+                        );
+                      })()
                     ) : (
                       <span
                         onPointerDown={(e) => e.stopPropagation()}
@@ -3499,15 +3540,19 @@ export default function AlbumSpreadCanvasEditor({
         {anchorPhoto && menuAnchorPhoto && menuPositionStyle && (() => {
           // Used to track the selected photo's own x position (and flip left/right depending on
           // which canvas half it sat in) — dropped entirely: the menu now opens at one fixed spot
-          // on the canvas's own right edge no matter where the photo is. Anchored to the CANVAS's
-          // own right edge (via canvasRestRect), not the viewport's — web's own `right: "8px"` is
-          // viewport-relative, which assumes generous margin between the canvas and the window
-          // edge that a real desktop browser window has but this app's own (much narrower, fixed-
-          // size) Electron window does not; canvas-relative math never overlaps the canvas
-          // regardless of window size.
-          const sidePosition: React.CSSProperties = canvasRestRect
-            ? { left: Math.min(canvasRestRect.left + canvasRestRect.width + 8, window.innerWidth - 40), right: "auto" }
-            : { right: "8px", left: "auto" };
+          // on the canvas's own right edge no matter where the photo is.
+          //
+          // NOTE: this menu is `position: absolute` (matching web exactly), anchored to its own
+          // nearest positioned ancestor (the "relative w-full" wrapper right around the canvas,
+          // sized to match it) — NOT the viewport. `right: "8px"` here is therefore already
+          // relative to the canvas's own right edge, safe as-is. An earlier attempt to "fix"
+          // canvas-overlap here by computing `left` from canvasRestRect (a VIEWPORT-relative
+          // getBoundingClientRect measurement) was wrong for an absolutely-positioned element —
+          // that pixel value doesn't mean the same thing in this element's own coordinate space,
+          // which is exactly why the whole menu stopped appearing (positioned far outside its own
+          // containing block). Left/T-button/shadow-overlay below ARE `position: fixed` and
+          // correctly use canvasRestRect for the identical reason this one must not.
+          const sidePosition: React.CSSProperties = { right: "8px", left: "auto" };
           return (
           <PhotoFloatingMenu
             el={anchorPhoto}
