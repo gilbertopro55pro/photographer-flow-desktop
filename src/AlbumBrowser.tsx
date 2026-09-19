@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { supabase } from "./supabase";
-import { previewUrlFor } from "./photoApi";
+import { previewUrlFor, backfillMissingPreviews } from "./photoApi";
 import AlbumPageEditor from "./AlbumPageEditor";
 import SpreadPreview from "./SpreadPreview";
 import type { GalleryRow, GalleryAlbumRow, GalleryAlbumSpreadRow } from "./types";
@@ -87,7 +87,23 @@ export default function AlbumBrowser({ initialGalleryId }: { initialGalleryId?: 
             .select("id, preview_storage_path")
             .in("id", photoIds)
             .returns<{ id: string; preview_storage_path: string | null }[]>();
+          const rowsById = new Map((photoRows ?? []).map((p) => [p.id, p]));
           setPreviewUrls(new Map((photoRows ?? []).map((p) => [p.id, previewUrlFor(p.preview_storage_path)])));
+
+          // Self-heal any photo left without a preview by the now-fixed upload bug (see
+          // backfillMissingPreviews' own comment) — fire-and-forget, then re-read just the
+          // preview paths so a fix shows up in this grid immediately.
+          if (photoIds.some((id) => !rowsById.get(id)?.preview_storage_path)) {
+            backfillMissingPreviews(currentGalleryId).then(async () => {
+              const { data: refreshed } = await supabase
+                .from("gallery_photos")
+                .select("id, preview_storage_path")
+                .in("id", photoIds)
+                .returns<{ id: string; preview_storage_path: string | null }[]>();
+              if (!refreshed) return;
+              setPreviewUrls(new Map(refreshed.map((p) => [p.id, previewUrlFor(p.preview_storage_path)])));
+            });
+          }
         }
       }
       setAlbumLoading(false);

@@ -29,3 +29,32 @@ export async function fetchPhotoBytes(photoId: string): Promise<ArrayBuffer> {
   if (!res.ok) throw new Error(`שגיאה בטעינת תמונה (${res.status})`);
   return res.arrayBuffer();
 }
+
+// Self-heals a real, now-fixed upload bug: photos uploaded through THIS app (or the FTP watcher)
+// used to never get a preview generated at all — the web app's own upload flow warms one up
+// right after upload, but this app has no equivalent, and nothing else ever triggered it either,
+// so a gallery never opened in a browser was left with permanently broken (preview_storage_path:
+// null) photos, shown as a broken-image glyph everywhere previewUrlFor() is used. Both upload
+// routes now generate a preview themselves going forward (see the web repo's own route comments);
+// this backfills any that already exist. Fire-and-forget from the caller — safe to call on every
+// gallery load, since the server route itself is a no-op once every photo already has a preview.
+// Returns how many photos still have no preview after this call (0 once fully backfilled; > 0
+// only when a gallery's backlog exceeds the server route's own per-call batch size, in which case
+// calling this again continues where it left off).
+export async function backfillMissingPreviews(galleryId: string): Promise<number> {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  if (!session) return 0;
+  try {
+    const res = await fetch(`${WEB_APP_URL}/api/desktop/galleries/${galleryId}/photos/backfill-previews`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    });
+    if (!res.ok) return 0;
+    const data: { remaining?: number } = await res.json();
+    return data.remaining ?? 0;
+  } catch {
+    return 0;
+  }
+}

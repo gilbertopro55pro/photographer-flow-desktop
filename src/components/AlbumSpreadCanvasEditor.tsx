@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { AlbumElement, AlbumFrame, AlbumOrnamentElement, AlbumPhotoElement, AlbumPhotoFilter, AlbumShapeElement, AlbumTemplateRow, AlbumTextElement, GalleryAlbumSpreadRow } from "@/lib/types";
 import { ALBUM_FONTS, ALBUM_FONT_CLASS_NAMES, albumFontFamilyCss } from "@/lib/albumFonts";
 import { TEXT_COLOR_PALETTE, isLightTextColor } from "@/lib/textColor";
@@ -162,6 +162,13 @@ function IconTrash() {
     </MenuIconBase>
   );
 }
+function IconX() {
+  return (
+    <MenuIconBase>
+      <path d="M6 6l12 12M18 6L6 18" />
+    </MenuIconBase>
+  );
+}
 function IconLock() {
   return (
     <MenuIconBase>
@@ -273,19 +280,44 @@ function IconCheck({ size }: { size?: number }) {
   );
 }
 
-function CircleButton({ label, active, onClick, children }: { label: string; active?: boolean; onClick: () => void; children: React.ReactNode }) {
+function CircleButton({
+  label,
+  active,
+  onClick,
+  children,
+  scale = 1,
+  danger = false,
+}: {
+  label: string;
+  active?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+  // Resizes the button's REAL width/height (not a `transform: scale()`) — a transform only
+  // repaints the button larger while its actual layout/hit-test box stays at the original size.
+  // Always 1 on this desktop-only app (no compact/phone mode), but kept as a real prop for parity
+  // with the web app's own CircleButton.
+  scale?: number;
+  // Red outline + red icon variant, used for the trailing "delete" circle so it reads as a
+  // distinct, harder-to-misclick destructive action rather than just another tool icon.
+  danger?: boolean;
+}) {
+  const size = 28 * scale;
   return (
     <button
       onClick={onClick}
       title={label}
-      className="h-7 w-7 rounded-full flex items-center justify-center shrink-0"
+      className="rounded-full flex items-center justify-center shrink-0"
       style={{
+        width: size,
+        height: size,
         background: active ? "var(--color-amber-deep)" : "#fff",
         // Fixed dark icon color, not the theme-flipped --color-ink token — this button's own
         // background stays white in both themes, so the icon must too or it goes near-invisible
         // (light-on-white) once --color-ink flips light for dark mode's page text.
-        color: active ? "#fff" : "#201f33",
-        boxShadow: "0 2px 6px rgba(46,49,66,0.22), 0 0 0 1px var(--color-line)",
+        color: danger ? "var(--color-rose)" : active ? "#fff" : "#201f33",
+        boxShadow: danger
+          ? "0 2px 6px rgba(46,49,66,0.22), 0 0 0 1.5px var(--color-rose)"
+          : "0 2px 6px rgba(46,49,66,0.22), 0 0 0 1px var(--color-line)",
       }}
     >
       {children}
@@ -323,6 +355,74 @@ function MiniSlider({ label, value, min, max, step = 1, unit = "", onChange }: {
 // Ported verbatim from the web app's own editor. Shared by every one of the free-drag side panels
 // (ornament/shape/text/photo-adjust) — one instance covers all four since only one of them is ever
 // mounted at a time.
+const MENU_ANCHOR_TIE_EPS_PCT = 1;
+// Which selected photo the circular floating menu visually hangs from — the topmost selected
+// photo (ties within MENU_ANCHOR_TIE_EPS_PCT broken by whichever sits furthest right, matching
+// this RTL app's own reading order). Deliberately a SEPARATE reference photo from `anchorPhoto` in
+// the main component (which is "whichever selected photo receives single-target actions") — usually
+// the same photo, but not guaranteed to be when several photos are selected.
+function pickMenuAnchorPhoto(photos: AlbumPhotoElement[]): AlbumPhotoElement | null {
+  if (photos.length === 0) return null;
+  const minY = Math.min(...photos.map((p) => p.yPct));
+  const topCandidates = photos.filter((p) => p.yPct <= minY + MENU_ANCHOR_TIE_EPS_PCT);
+  return topCandidates.reduce((best, p) => (p.xPct + p.widthPct > best.xPct + best.widthPct ? p : best), topCandidates[0]);
+}
+
+// Normally the menu hangs from the anchor photo's own top edge, bounded below by the green
+// print-safe frame's bottom edge. But a photo sitting on or near that bottom edge leaves no room to
+// hang the menu down from — so once any selected photo's own bottom edge comes within
+// FLIP_TRIGGER_CM of the frame's bottom, the menu flips: it hangs UP from the anchor's own bottom
+// edge instead, with the frame's top edge as its ceiling.
+//
+// The menu's FAR edge is first clamped to the SELECTED PHOTO's own top/bottom edge (not the green
+// frame) — with PHOTO_BOUND_SLACK_CM of allowed overflow past that edge. menuHeightPct is the
+// menu's own actually-rendered height (measured via a ref, not guessed), so this clamp is exact
+// regardless of how many buttons happen to be in it. The flip TRIGGER itself is intentionally still
+// measured against the frame's bottom — that decision is about whether there's room in the frame to
+// hang the menu down at all, a separate question from how big the menu's own box is once a
+// direction is picked.
+// On TOP of that photo-relative clamp, a hard CANVAS-relative clamp always applies too — the menu's
+// own top and bottom edges must never cross the canvas's own top (0%) / bottom (100%) boundary, no
+// matter where the anchor photo itself sits (a photo near the very top/bottom edge could otherwise
+// still let the photo-relative clamp above push the menu off the canvas entirely).
+const FLIP_TRIGGER_CM = 3;
+const PHOTO_BOUND_SLACK_CM = 1;
+function photoMenuPositionStyle(
+  selectedPhotos: AlbumPhotoElement[],
+  anchor: AlbumPhotoElement,
+  album: { height_cm: number },
+  marginInsetPct: { x: number; y: number } | null,
+  menuHeightPct: number | null
+): React.CSSProperties {
+  const heightCm = album.height_cm > 0 ? album.height_cm : 1;
+  const frameTopPct = marginInsetPct?.y ?? 0;
+  const frameBottomPct = 100 - frameTopPct;
+  const slackPct = (PHOTO_BOUND_SLACK_CM / heightCm) * 100;
+  const photoTopPct = anchor.yPct;
+  const photoBottomPct = anchor.yPct + anchor.heightPct;
+
+  const bottomDistancesCm = selectedPhotos.map((p) => ((frameBottomPct - (p.yPct + p.heightPct)) / 100) * heightCm);
+  const shouldFlip = bottomDistancesCm.length > 0 && Math.min(...bottomDistancesCm) < FLIP_TRIGGER_CM;
+
+  if (shouldFlip) {
+    let bottomPct = 100 - photoBottomPct;
+    if (menuHeightPct != null) {
+      const maxBottomPct = 100 - (photoTopPct - slackPct) - menuHeightPct;
+      bottomPct = Math.min(bottomPct, maxBottomPct);
+      bottomPct = Math.max(0, Math.min(bottomPct, 100 - menuHeightPct));
+    }
+    return { top: "auto", bottom: `${bottomPct}%` };
+  }
+
+  let topPct = photoTopPct;
+  if (menuHeightPct != null) {
+    const maxTopPct = photoBottomPct + slackPct - menuHeightPct;
+    topPct = Math.min(topPct, maxTopPct);
+    topPct = Math.max(0, Math.min(topPct, 100 - menuHeightPct));
+  }
+  return { top: `${topPct}%`, bottom: "auto" };
+}
+
 function useDraggablePanelOffset(
   resetKey: string | null,
   clampOffset?: (offset: { x: number; y: number }) => { x: number; y: number },
@@ -460,6 +560,8 @@ function PanelResizeHandle({ handlers }: { handlers: ReturnType<typeof useResiza
 // photo's own frame instead of getting cropped by it.
 function PhotoFloatingMenu({
   el,
+  positionStyle,
+  menuRef,
   panning,
   onTogglePan,
   onUpdate,
@@ -467,12 +569,22 @@ function PhotoFloatingMenu({
   onDeleteSelected,
   onBringToFront,
   onSendToBack,
+  buttonScale = 1,
+  dragOffset,
+  dragGripHandlers,
   shadowPanelOpen,
   onToggleShadowPanel,
   photoAdjustPanelOpen,
   onTogglePhotoAdjustPanel,
 }: {
   el: AlbumPhotoElement;
+  // Computed by photoMenuPositionStyle() from the group's own topmost-selected photo, not
+  // necessarily this same `el` — see that function's own comment for the full anchor/flip/clamp
+  // logic.
+  positionStyle: React.CSSProperties;
+  // The parent measures this root div's real rendered height to clamp the position precisely
+  // against the green frame — see menuHeightPct's own comment.
+  menuRef?: React.Ref<HTMLDivElement>;
   panning: boolean;
   onTogglePan: () => void;
   onUpdate: (patch: Partial<AlbumPhotoElement>) => void;
@@ -480,6 +592,11 @@ function PhotoFloatingMenu({
   onDeleteSelected: () => void;
   onBringToFront: () => void;
   onSendToBack: () => void;
+  buttonScale?: number;
+  // Free drag-anywhere offset, layered on top of the computed positionStyle via `transform` — see
+  // useDraggablePanelOffset's own comment.
+  dragOffset: { x: number; y: number };
+  dragGripHandlers: ReturnType<typeof useDraggablePanelOffset>["gripHandlers"];
   // Whether the shadow/border sliders are showing — lifted to the parent since that panel no
   // longer renders as a small flyout attached to this button (see PhotoShadowOverlayPanel) but as
   // a layer positioned over the "עריכת תמונה" panel instead, which the parent owns.
@@ -492,54 +609,46 @@ function PhotoFloatingMenu({
   onTogglePhotoAdjustPanel: () => void;
 }) {
   const [openPanel, setOpenPanel] = useState<null | "opacity" | "blur" | "rotation">(null);
-  const onLeft = el.xPct + el.widthPct > 70;
-  const side: "left" | "right" = onLeft ? "left" : "right";
-  const rotationPct = Math.round((((el.rotation ?? 0) % 360) + 360) % 360 / 360 * 100);
+  // Always pinned to the photo's own right edge (screen-right — el.xPct/widthPct are plain
+  // left-to-right canvas percentages regardless of the app's RTL text direction) and following it
+  // as it's dragged — it used to flip to the photo's left edge once the photo got close to the
+  // canvas's right edge, which felt inconsistent/unpredictable.
+  const side: "left" | "right" = "right";
+  const rotationDeg = Math.round((((el.rotation ?? 0) % 360) + 360) % 360);
   const toggle = (panel: typeof openPanel) => setOpenPanel((p) => (p === panel ? null : panel));
 
   return (
     <div
-      className="absolute z-20 flex flex-col gap-1"
+      ref={menuRef}
+      className="absolute z-20 flex flex-col gap-0.5"
       style={{
-        // Anchored to the frame's own top edge (not vertically centered) — a centered menu for a
-        // photo near the canvas's top row pushes half its height above the canvas, past where the
-        // dialog's own overflow-y-auto can scroll to (it can't scroll to a negative offset), which
-        // makes the top buttons genuinely unclickable. Anchoring downward instead means the worst
-        // case is needing to scroll the dialog down, which is always possible.
-        top: `${el.yPct}%`,
-        left: onLeft ? `calc(${el.xPct}% - 34px)` : `calc(${el.xPct + el.widthPct}% + 8px)`,
+        ...positionStyle,
+        transform: `translate(${dragOffset.x}px, ${dragOffset.y}px)`,
       }}
       onClick={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
     >
-      <CircleButton label="עריכת תמונה — חשיפה, ניגודיות, איזון לבן ועוד" active={photoAdjustPanelOpen} onClick={onTogglePhotoAdjustPanel}>
+      <PanelDragGrip handlers={dragGripHandlers} />
+      <CircleButton scale={buttonScale} label="עריכת תמונה — חשיפה, ניגודיות, איזון לבן ועוד" active={photoAdjustPanelOpen} onClick={onTogglePhotoAdjustPanel}>
         <IconAdjust />
       </CircleButton>
-      <CircleButton label="שחור-לבן" active={el.filter === "bw"} onClick={() => onUpdate({ filter: el.filter === "bw" ? "none" : "bw" })}>
+      <CircleButton scale={buttonScale} label="שחור-לבן" active={el.filter === "bw"} onClick={() => onUpdate({ filter: el.filter === "bw" ? "none" : "bw" })}>
         <IconBW />
       </CircleButton>
-      <CircleButton label="גווני ספיה" active={el.filter === "sepia"} onClick={() => onUpdate({ filter: el.filter === "sepia" ? "none" : "sepia" })}>
+      <CircleButton scale={buttonScale} label="גווני ספיה" active={el.filter === "sepia"} onClick={() => onUpdate({ filter: el.filter === "sepia" ? "none" : "sepia" })}>
         <IconSepia />
       </CircleButton>
-      <div className="relative">
-        <CircleButton label="מיקום התמונה במסגרת — גררו את התמונה כדי למקם אותה" active={panning} onClick={onTogglePan}>
-          <IconFocal />
-        </CircleButton>
-        {panning && (
-          <FlyoutPanel side={side} width={120}>
-            <button
-              onClick={() => onUpdate({ focalX: 50, focalY: 50 })}
-              className="w-full rounded-lg py-1.5 text-[10px] font-semibold bg-chip text-ink-soft"
-            >
-              מרכז תמונה
-            </button>
-          </FlyoutPanel>
-        )}
-      </div>
-      <CircleButton label="הצגה בגודל נכון — מתאים את המסגרת ליחס הרוחב/גובה האמיתי של התמונה" onClick={onTrueSize}>
+      {/* No flyout here any more — double-clicking the photo now centers it directly (see the
+          canvas's own onDoubleClick), so a "מרכז תמונה" flyout button was pure redundancy. The
+          circle's own active state is enough of a marker that pan mode is on. */}
+      <CircleButton scale={buttonScale} label="מיקום התמונה במסגרת — גררו את התמונה כדי למקם אותה, או לחצו פעמיים על התמונה כדי למרכז" active={panning} onClick={onTogglePan}>
+        <IconFocal />
+      </CircleButton>
+      <CircleButton scale={buttonScale} label="הצגה בגודל נכון — מתאים את המסגרת ליחס הרוחב/גובה האמיתי של התמונה" onClick={onTrueSize}>
         <IconTrueSize />
       </CircleButton>
       <CircleButton
+        scale={buttonScale}
         label="שמירת יחס גובה-רוחב בשינוי גודל מהפינות"
         active={!!el.lockAspect}
         onClick={() => onUpdate({ lockAspect: !el.lockAspect })}
@@ -547,6 +656,7 @@ function PhotoFloatingMenu({
         <IconAspectLock />
       </CircleButton>
       <CircleButton
+        scale={buttonScale}
         label={el.locked ? "נעולה — לחצו לשחרור המיקום והגודל" : "נעילת מיקום וגודל"}
         active={!!el.locked}
         onClick={() => onUpdate({ locked: !el.locked })}
@@ -554,7 +664,7 @@ function PhotoFloatingMenu({
         <IconLock />
       </CircleButton>
       <div className="relative">
-        <CircleButton label="שקיפות" active={openPanel === "opacity" || (el.opacity ?? 100) < 100} onClick={() => toggle("opacity")}>
+        <CircleButton scale={buttonScale} label="שקיפות" active={openPanel === "opacity" || (el.opacity ?? 100) < 100} onClick={() => toggle("opacity")}>
           <IconOpacity />
         </CircleButton>
         {openPanel === "opacity" && (
@@ -564,7 +674,7 @@ function PhotoFloatingMenu({
         )}
       </div>
       <div className="relative">
-        <CircleButton label="טשטוש" active={openPanel === "blur" || !!el.blur} onClick={() => toggle("blur")}>
+        <CircleButton scale={buttonScale} label="טשטוש" active={openPanel === "blur" || !!el.blur} onClick={() => toggle("blur")}>
           <IconBlur />
         </CircleButton>
         {openPanel === "blur" && (
@@ -574,26 +684,26 @@ function PhotoFloatingMenu({
         )}
       </div>
       <div className="relative">
-        <CircleButton label="סיבוב" active={openPanel === "rotation" || !!el.rotation} onClick={() => toggle("rotation")}>
+        <CircleButton scale={buttonScale} label="סיבוב" active={openPanel === "rotation" || !!el.rotation} onClick={() => toggle("rotation")}>
           <IconRotate />
         </CircleButton>
         {openPanel === "rotation" && (
           <FlyoutPanel side={side}>
-            <MiniSlider label="סיבוב" value={rotationPct} min={0} max={100} unit="%" onChange={(pct) => onUpdate({ rotation: (pct / 100) * 360 })} />
+            <MiniSlider label="סיבוב" value={rotationDeg} min={0} max={360} unit="°" onChange={(deg) => onUpdate({ rotation: deg })} />
           </FlyoutPanel>
         )}
       </div>
-      <CircleButton label="צל וקו מתאר" active={shadowPanelOpen || !!el.shadow || !!el.borderWidth} onClick={onToggleShadowPanel}>
+      <CircleButton scale={buttonScale} label="צל וקו מתאר" active={shadowPanelOpen || !!el.shadow || !!el.borderWidth} onClick={onToggleShadowPanel}>
         <IconShadow />
       </CircleButton>
-      <CircleButton label="קדימה — לשכבה העליונה" onClick={onBringToFront}>
+      <CircleButton scale={buttonScale} label="קדימה — לשכבה העליונה" onClick={onBringToFront}>
         <IconToFront />
       </CircleButton>
-      <CircleButton label="אחורה — לשכבה התחתונה" onClick={onSendToBack}>
+      <CircleButton scale={buttonScale} label="אחורה — לשכבה התחתונה" onClick={onSendToBack}>
         <IconToBack />
       </CircleButton>
-      <CircleButton label="מחיקת התמונה/ות שנבחרו" onClick={onDeleteSelected}>
-        <IconTrash />
+      <CircleButton scale={buttonScale} label="מחיקת התמונה/ות שנבחרו" danger onClick={onDeleteSelected}>
+        <IconX />
       </CircleButton>
     </div>
   );
@@ -776,7 +886,6 @@ function OrnamentFloatingMenu({
   onBringToFront: () => void;
   onSendToBack: () => void;
 }) {
-  const rotationPct = Math.round((((el.rotation ?? 0) % 360) + 360) % 360 / 360 * 100);
   return (
     <div
       className="w-[150px] rounded-xl border border-line bg-white p-2.5 shadow-sheet space-y-2"
@@ -810,7 +919,19 @@ function OrnamentFloatingMenu({
         ))}
       </div>
       <MiniSlider label="שקיפות" value={el.opacity ?? 100} min={0} max={100} unit="%" onChange={(v) => onUpdate({ opacity: v })} />
-      <MiniSlider label="סיבוב" value={rotationPct} min={0} max={100} unit="%" onChange={(pct) => onUpdate({ rotation: (pct / 100) * 360 })} />
+      <MiniSlider label="קו מתאר" value={el.borderWidth ?? 0} min={0} max={50} unit="px" onChange={(v) => onUpdate({ borderWidth: v })} />
+      {!!el.borderWidth && (
+        <div className="flex items-center gap-1.5">
+          {BORDER_COLORS.map((c) => (
+            <button
+              key={c}
+              onClick={() => onUpdate({ borderColor: c })}
+              className="h-5 w-5 rounded-full"
+              style={{ background: c, boxShadow: (el.borderColor ?? "#ffffff") === c ? "0 0 0 2px var(--color-amber-deep)" : "0 0 0 1px var(--color-line)" }}
+            />
+          ))}
+        </div>
+      )}
       <div className="flex items-center gap-1">
         <button onClick={onBringToFront} title="קדימה — לשכבה העליונה" className="flex-1 h-7 rounded-lg bg-chip flex items-center justify-center text-ink-soft">
           <IconToFront />
@@ -1869,6 +1990,24 @@ export default function AlbumSpreadCanvasEditor({
   // A 0.5cm trim-safe inset expressed as a % of each axis — proportional, so it looks right on a
   // 20x30 album and a 60x40 one alike.
   const marginInsetPct = marginInsetPctFor(album);
+  // Drives the circular floating menu's position — see photoMenuPositionStyle's own comment for the
+  // full anchor/flip/clamp logic.
+  const menuAnchorPhoto = pickMenuAnchorPhoto(selectedPhotos);
+  // Free drag-anywhere offset for the circular photo menu — see useDraggablePanelOffset's own
+  // comment. Reset key is the anchor photo's id, so the offset clears when a different photo
+  // becomes the menu's anchor.
+  const photoMenuDrag = useDraggablePanelOffset(menuAnchorPhoto?.id ?? null);
+  // The hard "never cross the green frame" clamp (in photoMenuPositionStyle) needs the menu's own
+  // actually-rendered height, not a guess, since it varies with however many buttons happen to be
+  // visible. Measured after every paint where it's mounted — a single cheap offsetHeight read, not
+  // worth the bug surface of an incomplete dependency array.
+  const photoMenuRef = useRef<HTMLDivElement>(null);
+  const [photoMenuHeightPx, setPhotoMenuHeightPx] = useState(0);
+  useLayoutEffect(() => {
+    setPhotoMenuHeightPx(photoMenuRef.current?.offsetHeight ?? 0);
+  });
+  const menuHeightPct = canvasRestRect && photoMenuHeightPx > 0 ? (photoMenuHeightPx / canvasRestRect.height) * 100 : null;
+  const menuPositionStyle = menuAnchorPhoto ? photoMenuPositionStyle(selectedPhotos, menuAnchorPhoto, album, marginInsetPct, menuHeightPct) : null;
 
   // Leaving "position image" mode whenever the selection changes elsewhere keeps its green ring
   // tied to whatever's actually selected, rather than lingering on a no-longer-selected element.
@@ -2668,7 +2807,7 @@ export default function AlbumSpreadCanvasEditor({
 
   return (
     <div
-      className={`fixed inset-0 z-[80] flex items-center justify-center p-4 ${ALBUM_FONT_CLASS_NAMES}`}
+      className={`fixed inset-0 z-[80] flex items-center justify-center p-4 overflow-hidden ${ALBUM_FONT_CLASS_NAMES}`}
       style={{ background: "rgba(46,49,66,0.55)", backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)" }}
       // Right-click (and the page's own custom menu, if it ever grows one) does nothing here —
       // there's no editor context menu to show. Shift+right-click specifically forces the
@@ -2719,9 +2858,9 @@ export default function AlbumSpreadCanvasEditor({
           and splits into two flex columns — a large centered canvas on one side and a
           scrollable controls sidebar on the other — since the cramped max-w-sm modal was a real
           problem on desktop, where there's plenty of room to work more comfortably. */}
-      <div className="w-full max-w-sm lg:max-w-none lg:w-[95vw] lg:h-[92vh] rounded-3xl p-4 lg:p-6 bg-paper shadow-sheet max-h-[92vh] overflow-y-auto lg:overflow-visible lg:flex lg:flex-row lg:gap-6">
+      <div className="w-full max-w-sm lg:max-w-none lg:w-[95vw] lg:h-[92vh] rounded-3xl p-4 lg:px-6 lg:pt-2 lg:pb-4 bg-paper shadow-sheet max-h-[92vh] overflow-y-auto overscroll-contain lg:overflow-visible lg:flex lg:flex-row lg:gap-6">
         <div className="lg:flex-1 lg:flex lg:flex-col lg:min-w-0 lg:min-h-0">
-        <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center justify-between mb-1">
           <h2 className="text-base font-bold font-display">{mode === "custom" ? "עיצוב חופשי" : "הוספת טקסט לעמוד"}</h2>
           <div className="flex items-center gap-2">
             {mode === "custom" && (
@@ -3112,7 +3251,12 @@ export default function AlbumSpreadCanvasEditor({
                       height: `${el.heightPct}%`,
                       opacity: (el.opacity ?? 100) / 100,
                       transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
-                      outline: isSelected ? "2px dashed var(--color-amber-deep)" : "none",
+                      outline: el.borderWidth
+                        ? `${el.borderWidth}px solid ${el.borderColor ?? "#fff"}`
+                        : isSelected
+                        ? "2px dashed var(--color-amber-deep)"
+                        : "none",
+                      outlineOffset: el.borderWidth ? `-${el.borderWidth}px` : undefined,
                     }}
                   >
                     {imgSrc &&
@@ -3313,9 +3457,16 @@ export default function AlbumSpreadCanvasEditor({
             />
           )}
         </div>
-        {anchorPhoto && (
+        {anchorPhoto && menuAnchorPhoto && menuPositionStyle && (() => {
+          // Used to track the selected photo's own x position (and flip left/right depending on
+          // which canvas half it sat in) — dropped entirely: the menu now opens at one fixed spot
+          // on the canvas's own right edge no matter where the photo is.
+          const sidePosition: React.CSSProperties = { right: "8px", left: "auto" };
+          return (
           <PhotoFloatingMenu
             el={anchorPhoto}
+            positionStyle={{ ...menuPositionStyle, ...sidePosition }}
+            menuRef={photoMenuRef}
             panning={selectedIds.size === 1 && panModeId === anchorPhoto.id}
             onTogglePan={() => {
               if (selectedIds.size !== 1) return;
@@ -3326,12 +3477,15 @@ export default function AlbumSpreadCanvasEditor({
             onDeleteSelected={removeSelected}
             onBringToFront={() => bringToFront(anchorPhoto.id)}
             onSendToBack={() => sendToBack(anchorPhoto.id)}
+            dragOffset={photoMenuDrag.offset}
+            dragGripHandlers={photoMenuDrag.gripHandlers}
             shadowPanelOpen={photoShadowPanelOpen}
             onToggleShadowPanel={() => setPhotoShadowPanelOpen((v) => !v)}
             photoAdjustPanelOpen={photoAdjustPanelOpen}
             onTogglePhotoAdjustPanel={() => setPhotoAdjustPanelOpen((v) => !v)}
           />
-        )}
+          );
+        })()}
         {/* A single dedicated toggle for the text styling panel, positioned at the canvas's own top
             edge (not tracking the selected text box's position) — same "stop making panels jump
             around when the selection changes" reasoning as the big side panel below. Text has no
@@ -3440,159 +3594,6 @@ export default function AlbumSpreadCanvasEditor({
         )}
         </div>
         </div>
-        </div>
-
-        {/* Controls sidebar — stacks below the canvas on mobile same as before; becomes an
-            independently-scrolling side column on desktop so a tall control list never forces
-            the canvas itself to scroll out of view. */}
-        <div className="lg:w-[380px] lg:shrink-0 lg:overflow-y-auto lg:pr-1 lg:min-h-0">
-        {selectedElements.length > 0 && (
-          <div className="space-y-2 mt-2.5">
-            {selectedText && (
-              <p className="text-[11px] text-ink-soft text-center flex items-center justify-center gap-1">
-                <IconInfo size={13} />
-                צבע, יישור, גופן, גודל ומחיקה נמצאים בתפריט הצף ליד הטקסט
-              </p>
-            )}
-            {selectedOrnament && (
-              <p className="text-[11px] text-ink-soft text-center flex items-center justify-center gap-1">
-                <IconInfo size={13} />
-                צבע, שקיפות, סיבוב, סדר שכבות ומחיקה נמצאים בתפריט הצף ליד העיטור
-              </p>
-            )}
-            {selectedShape && (
-              <p className="text-[11px] text-ink-soft text-center flex items-center justify-center gap-1">
-                <IconInfo size={13} />
-                צבע, מסכה, שקיפות, סיבוב, סדר שכבות ומחיקה נמצאים בתפריט הצף ליד הצורה
-              </p>
-            )}
-            {selectedPhotos.length === 1 && anchorPhoto && (
-              <p className="text-[11px] text-ink-soft text-center flex items-center justify-center gap-1">
-                <IconInfo size={13} />
-                לחצו על התמונה כדי לפתוח את תפריט העיצוב הצף (שחור-לבן, ספיה, שקיפות, טשטוש, סיבוב, צל וקו מתאר)
-              </p>
-            )}
-            {selectedPhotos.length > 1 && (
-              <p className="text-[11px] text-ink-soft text-center flex items-center justify-center gap-1">
-                <IconInfo size={13} />
-                נבחרו {selectedPhotos.length} תמונות — גרירה, שינוי גודל ופעולות מהתפריט הצף יחולו על כולן
-              </p>
-            )}
-            <button onClick={removeSelected} className="w-full h-8 rounded-full bg-chip text-rose text-xs font-semibold">
-              מחיקה
-            </button>
-          </div>
-        )}
-
-        <div className="mt-3 pt-3 border-t border-line">
-          <p className="text-[11px] font-bold text-ink-soft mb-1.5">רקע לכל העמוד</p>
-          {backgroundPhoto?.url ? (
-            <div className="space-y-2">
-              <div className="relative h-16 rounded-lg overflow-hidden">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={backgroundPhoto.url} alt="" className="w-full h-full object-cover" style={{ opacity: backgroundOpacity / 100 }} />
-                <button onClick={removeBackground} className="absolute top-1 left-1 h-6 w-6 rounded-full bg-black/60 text-white text-xs flex items-center justify-center">
-                  <IconClose size={13} />
-                </button>
-              </div>
-              <SliderControl label="שקיפות רקע" value={backgroundOpacity} min={0} max={100} unit="%" onChange={setBackgroundOpacity} />
-              <SliderControl label="טשטוש רקע (Blur)" value={backgroundBlur} min={0} max={100} unit="%" onChange={setBackgroundBlur} />
-              <SliderControl label="זום רקע" value={backgroundZoom} min={100} max={400} unit="%" onChange={setBackgroundZoom} />
-            </div>
-          ) : (
-            <button onClick={openPickerForBackground} className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink">
-              + בחירת תמונת רקע
-            </button>
-          )}
-        </div>
-
-        <div className="flex gap-2 mt-3">
-          {mode === "custom" && (
-            <>
-              <button
-                ref={photoSizeButtonRef}
-                onClick={() => {
-                  const rect = photoSizeButtonRef.current?.getBoundingClientRect();
-                  if (rect) setPhotoSizePanelRect({ top: rect.bottom, left: rect.left, width: Math.max(rect.width, 190) });
-                  setPhotoSizePickerOpen(true);
-                }}
-                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink"
-              >
-                + תמונה
-              </button>
-              <button onClick={addFrame} className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink">
-                + מסגרת
-              </button>
-              <button onClick={() => setTemplatePickerOpen(true)} className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink flex items-center justify-center gap-1.5">
-                <IconGrid size={14} />
-                תבניות
-              </button>
-            </>
-          )}
-          <button onClick={() => setTextDraftOpen(true)} className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink">
-            + טקסט
-          </button>
-        </div>
-        {mode === "custom" && (
-          <button
-            ref={masksButtonRef}
-            onClick={() => {
-              const r = masksButtonRef.current?.getBoundingClientRect();
-              if (r) setMasksPanelRect({ top: r.bottom, left: r.left, width: r.width });
-              setMasksPickerOpen(true);
-            }}
-            className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink mt-2 flex items-center justify-center gap-1.5"
-          >
-            <IconMask size={14} />
-            מסכות — גררו על תמונה כדי להחיל
-          </button>
-        )}
-        {mode === "custom" && (
-          <button
-            ref={ornamentsButtonRef}
-            onClick={() => {
-              const r = ornamentsButtonRef.current?.getBoundingClientRect();
-              if (r) setOrnamentsPanelRect({ top: r.bottom, left: r.left, width: r.width });
-              setOrnamentsPickerOpen(true);
-            }}
-            className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink mt-2 flex items-center justify-center gap-1.5"
-          >
-            <IconOrnament size={14} />
-            עיטורים
-          </button>
-        )}
-        {mode === "custom" && (
-          <button
-            ref={shapesButtonRef}
-            onClick={() => {
-              const r = shapesButtonRef.current?.getBoundingClientRect();
-              if (r) setShapesPanelRect({ top: r.bottom, left: r.left, width: r.width });
-              setShapesPickerOpen(true);
-            }}
-            className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink mt-2 flex items-center justify-center gap-1.5"
-          >
-            <IconShape size={14} />
-            צורות
-          </button>
-        )}
-
-        {mode === "custom" && (
-          <button
-            onClick={() => setSaveTemplateOpen(true)}
-            disabled={!elements.some((e) => e.type === "photo")}
-            className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink mt-2 disabled:opacity-50 flex items-center justify-center gap-1.5"
-          >
-            <IconSave size={14} />
-            שמירת הפריסה כתבנית
-          </button>
-        )}
-
-        <button
-          onClick={() => onSave(elements, { photoId: backgroundPhotoId, blur: backgroundBlur, opacity: backgroundOpacity, zoom: backgroundZoom })}
-          className="w-full rounded-lg py-3 text-sm font-semibold bg-ink text-white mt-2.5"
-        >
-          שמירה
-        </button>
 
         {/* The current page used to be filtered OUT of this list, which meant every page switch
             removed a different item from the strip and the whole row visibly reflowed even though
@@ -3600,7 +3601,15 @@ export default function AlbumSpreadCanvasEditor({
             row's order and positions stable across switches; the current one is just marked
             instead of vanishing. */}
         {mode === "custom" && spreads && spreads.length > 1 && onSwitchSpread && (
-          <div className="mt-3 rounded-2xl p-3" style={{ background: "var(--color-chip)" }}>
+          // Pinned to the canvas's own actually-rendered width (not the wider column it sits in —
+          // the canvas itself can be narrower than the column once its own aspect ratio makes
+          // height the binding dimension) and centered under it, with a thin separator line above
+          // so it reads as its own region rather than bleeding into the canvas.
+          <div
+            className="mt-3 pt-3 rounded-2xl border-t border-line"
+            style={{ width: canvasRestRect ? canvasRestRect.width : undefined, margin: "12px auto 0" }}
+          >
+            <div className="rounded-2xl p-3" style={{ background: "var(--color-chip)" }}>
             <p className="text-[11px] font-bold text-ink-soft mb-2">שאר העמודים באלבום</p>
             <div className="flex items-center gap-2 overflow-x-auto overscroll-contain pb-1">
               {spreads.map((s, i) => {
@@ -3609,8 +3618,12 @@ export default function AlbumSpreadCanvasEditor({
                 return (
                   <div
                     key={s.id}
-                    className="relative shrink-0 rounded-lg overflow-hidden w-[calc(25%-6px)] aspect-square"
+                    className="relative shrink-0 rounded-lg overflow-hidden w-[calc(25%-5px)]"
                     style={{
+                      // The page's own real proportions, not a flat square — matches the grid's
+                      // own SpreadPreview wrapper (AlbumBrowser.tsx) so a page's thumbnail looks
+                      // the same shape everywhere it's shown.
+                      aspectRatio: `${s.width_cm ?? album.width_cm} / ${s.height_cm ?? album.height_cm}`,
                       outline: isCurrent ? "2px solid var(--color-amber-deep)" : "1px solid var(--color-line)",
                       outlineOffset: isCurrent ? "-2px" : undefined,
                       opacity: isCurrent ? 0.7 : 1,
@@ -3633,6 +3646,7 @@ export default function AlbumSpreadCanvasEditor({
                   </div>
                 );
               })}
+            </div>
             </div>
           </div>
         )}
@@ -3823,6 +3837,159 @@ export default function AlbumSpreadCanvasEditor({
             )}
           </div>
         )}
+        </div>
+
+        {/* Controls sidebar — stacks below the canvas on mobile same as before; becomes an
+            independently-scrolling side column on desktop so a tall control list never forces
+            the canvas itself to scroll out of view. */}
+        <div className="lg:w-[380px] lg:shrink-0 lg:overflow-y-auto lg:pr-1 lg:min-h-0">
+        {selectedElements.length > 0 && (
+          <div className="space-y-2 mt-2.5">
+            {selectedText && (
+              <p className="text-[11px] text-ink-soft text-center flex items-center justify-center gap-1">
+                <IconInfo size={13} />
+                צבע, יישור, גופן, גודל ומחיקה נמצאים בתפריט הצף ליד הטקסט
+              </p>
+            )}
+            {selectedOrnament && (
+              <p className="text-[11px] text-ink-soft text-center flex items-center justify-center gap-1">
+                <IconInfo size={13} />
+                צבע, שקיפות, סיבוב, סדר שכבות ומחיקה נמצאים בתפריט הצף ליד העיטור
+              </p>
+            )}
+            {selectedShape && (
+              <p className="text-[11px] text-ink-soft text-center flex items-center justify-center gap-1">
+                <IconInfo size={13} />
+                צבע, מסכה, שקיפות, סיבוב, סדר שכבות ומחיקה נמצאים בתפריט הצף ליד הצורה
+              </p>
+            )}
+            {selectedPhotos.length === 1 && anchorPhoto && (
+              <p className="text-[11px] text-ink-soft text-center flex items-center justify-center gap-1">
+                <IconInfo size={13} />
+                לחצו על התמונה כדי לפתוח את תפריט העיצוב הצף (שחור-לבן, ספיה, שקיפות, טשטוש, סיבוב, צל וקו מתאר)
+              </p>
+            )}
+            {selectedPhotos.length > 1 && (
+              <p className="text-[11px] text-ink-soft text-center flex items-center justify-center gap-1">
+                <IconInfo size={13} />
+                נבחרו {selectedPhotos.length} תמונות — גרירה, שינוי גודל ופעולות מהתפריט הצף יחולו על כולן
+              </p>
+            )}
+            <button onClick={removeSelected} className="w-full h-8 rounded-full bg-chip text-rose text-xs font-semibold">
+              מחיקה
+            </button>
+          </div>
+        )}
+
+        <div className="mt-3 pt-3 border-t border-line">
+          <p className="text-[11px] font-bold text-ink-soft mb-1.5">רקע לכל העמוד</p>
+          {backgroundPhoto?.url ? (
+            <div className="space-y-2">
+              <div className="relative h-16 rounded-lg overflow-hidden">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={backgroundPhoto.url} alt="" className="w-full h-full object-cover" style={{ opacity: backgroundOpacity / 100 }} />
+                <button onClick={removeBackground} className="absolute top-1 left-1 h-6 w-6 rounded-full bg-black/60 text-white text-xs flex items-center justify-center">
+                  <IconClose size={13} />
+                </button>
+              </div>
+              <SliderControl label="שקיפות רקע" value={backgroundOpacity} min={0} max={100} unit="%" onChange={setBackgroundOpacity} />
+              <SliderControl label="טשטוש רקע (Blur)" value={backgroundBlur} min={0} max={100} unit="%" onChange={setBackgroundBlur} />
+              <SliderControl label="זום רקע" value={backgroundZoom} min={100} max={400} unit="%" onChange={setBackgroundZoom} />
+            </div>
+          ) : (
+            <button onClick={openPickerForBackground} className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink">
+              + בחירת תמונת רקע
+            </button>
+          )}
+        </div>
+
+        <div className="flex gap-2 mt-3">
+          {mode === "custom" && (
+            <>
+              <button
+                ref={photoSizeButtonRef}
+                onClick={() => {
+                  const rect = photoSizeButtonRef.current?.getBoundingClientRect();
+                  if (rect) setPhotoSizePanelRect({ top: rect.bottom, left: rect.left, width: Math.max(rect.width, 190) });
+                  setPhotoSizePickerOpen(true);
+                }}
+                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink"
+              >
+                + תמונה
+              </button>
+              <button onClick={addFrame} className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink">
+                + מסגרת
+              </button>
+              <button onClick={() => setTemplatePickerOpen(true)} className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink flex items-center justify-center gap-1.5">
+                <IconGrid size={14} />
+                תבניות
+              </button>
+            </>
+          )}
+          <button onClick={() => setTextDraftOpen(true)} className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink">
+            + טקסט
+          </button>
+        </div>
+        {mode === "custom" && (
+          <button
+            ref={masksButtonRef}
+            onClick={() => {
+              const r = masksButtonRef.current?.getBoundingClientRect();
+              if (r) setMasksPanelRect({ top: r.bottom, left: r.left, width: r.width });
+              setMasksPickerOpen(true);
+            }}
+            className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink mt-2 flex items-center justify-center gap-1.5"
+          >
+            <IconMask size={14} />
+            מסכות — גררו על תמונה כדי להחיל
+          </button>
+        )}
+        {mode === "custom" && (
+          <button
+            ref={ornamentsButtonRef}
+            onClick={() => {
+              const r = ornamentsButtonRef.current?.getBoundingClientRect();
+              if (r) setOrnamentsPanelRect({ top: r.bottom, left: r.left, width: r.width });
+              setOrnamentsPickerOpen(true);
+            }}
+            className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink mt-2 flex items-center justify-center gap-1.5"
+          >
+            <IconOrnament size={14} />
+            עיטורים
+          </button>
+        )}
+        {mode === "custom" && (
+          <button
+            ref={shapesButtonRef}
+            onClick={() => {
+              const r = shapesButtonRef.current?.getBoundingClientRect();
+              if (r) setShapesPanelRect({ top: r.bottom, left: r.left, width: r.width });
+              setShapesPickerOpen(true);
+            }}
+            className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink mt-2 flex items-center justify-center gap-1.5"
+          >
+            <IconShape size={14} />
+            צורות
+          </button>
+        )}
+
+        {mode === "custom" && (
+          <button
+            onClick={() => setSaveTemplateOpen(true)}
+            disabled={!elements.some((e) => e.type === "photo")}
+            className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink mt-2 disabled:opacity-50 flex items-center justify-center gap-1.5"
+          >
+            <IconSave size={14} />
+            שמירת הפריסה כתבנית
+          </button>
+        )}
+
+        <button
+          onClick={() => onSave(elements, { photoId: backgroundPhotoId, blur: backgroundBlur, opacity: backgroundOpacity, zoom: backgroundZoom })}
+          className="w-full rounded-lg py-3 text-sm font-semibold bg-ink text-white mt-2.5"
+        >
+          שמירה
+        </button>
         </div>
       </div>
 

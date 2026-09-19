@@ -519,6 +519,8 @@ export type ExportOrnamentElement = {
   hPx: number;
   rotation?: number;
   opacity?: number;
+  borderWidth?: number;
+  borderColor?: string;
 } & ({ svg: string; color: string; imageBytes?: undefined; tintColor?: undefined } | { imageBytes: Uint8Array; svg?: undefined; color?: undefined; tintColor?: string });
 export type ExportShapeElement = {
   kind: "shape";
@@ -551,7 +553,14 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
 // can optionally be tinted here too (tintColor), by replacing its pixels with a solid color masked
 // by its own alpha channel — same technique as the CSS `mask-image`+`background-color` used for
 // the live canvas/preview tint.
-async function ornamentLayerRaw(source: Buffer, width: number, height: number, rotationDeg?: number, tintColor?: string): Promise<{ data: Buffer; width: number; height: number } | null> {
+async function ornamentLayerRaw(
+  source: Buffer,
+  width: number,
+  height: number,
+  rotationDeg?: number,
+  tintColor?: string,
+  extra?: { borderWidth?: number; borderColor?: string }
+): Promise<{ data: Buffer; width: number; height: number } | null> {
   let src = source;
   if (tintColor) {
     const meta = await sharp(source).metadata();
@@ -562,10 +571,32 @@ async function ornamentLayerRaw(source: Buffer, width: number, height: number, r
       .toBuffer();
     src = await sharp(solid).composite([{ input: source, blend: "dest-in" }]).png().toBuffer();
   }
-  let img = sharp(src).resize(width, height, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } });
-  if (rotationDeg) img = img.rotate(rotationDeg, { background: { r: 0, g: 0, b: 0, alpha: 0 } });
-  const { data, info } = await img.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  return { data, width: info.width, height: info.height };
+  const img = sharp(src).resize(width, height, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } });
+  let { data, info } = await img.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  let w = info.width;
+  let h = info.height;
+  if (extra?.borderWidth) {
+    // Same rectangular-stroke technique as composePhotoTile's border — traces the ornament's own
+    // bounding box, not its silhouette, matching the live editor's own CSS outline (which does the
+    // same, since a per-shape-traced outline isn't something CSS outline can do either).
+    const strokeSvg = `<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg"><rect x="${extra.borderWidth / 2}" y="${extra.borderWidth / 2}" width="${w - extra.borderWidth}" height="${h - extra.borderWidth}" fill="none" stroke="${extra.borderColor ?? "#ffffff"}" stroke-width="${extra.borderWidth}"/></svg>`;
+    data = await sharp(data, { raw: { width: w, height: h, channels: 4 } })
+      .composite([{ input: Buffer.from(strokeSvg) }])
+      .ensureAlpha()
+      .raw()
+      .toBuffer();
+  }
+  if (rotationDeg) {
+    const rotated = await sharp(data, { raw: { width: w, height: h, channels: 4 } })
+      .rotate(rotationDeg, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    data = rotated.data;
+    w = rotated.info.width;
+    h = rotated.info.height;
+  }
+  return { data, width: w, height: h };
 }
 
 export async function writeAlbumPagePsd(savePath: string, widthPx: number, heightPx: number, elements: ExportElement[], background: ExportBackground): Promise<void> {
@@ -617,7 +648,7 @@ export async function writeAlbumPagePsd(savePath: string, widthPx: number, heigh
       const w = Math.max(1, Math.round(el.wPx));
       const h = Math.max(1, Math.round(el.hPx));
       const source = el.imageBytes !== undefined ? Buffer.from(el.imageBytes) : Buffer.from(el.svg!.replace("<svg ", `<svg style="color:${el.color}" `));
-      const rendered = await ornamentLayerRaw(source, w, h, el.rotation, el.tintColor);
+      const rendered = await ornamentLayerRaw(source, w, h, el.rotation, el.tintColor, { borderWidth: el.borderWidth, borderColor: el.borderColor });
       if (!rendered) continue;
       const centerX = el.xPx + w / 2;
       const centerY = el.yPx + h / 2;

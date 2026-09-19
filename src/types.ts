@@ -103,6 +103,8 @@ export type AlbumOrnamentElement = {
   color?: string;
   rotation?: number;
   opacity?: number;
+  borderWidth?: number; // px, same scale/meaning as AlbumPhotoElement.borderWidth
+  borderColor?: string;
   locked?: boolean; // see AlbumPhotoElement.locked's own comment
 };
 

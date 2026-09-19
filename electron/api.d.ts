@@ -56,6 +56,8 @@ type AlbumOrnamentElementInput = {
   hPx: number;
   rotation?: number;
   opacity?: number;
+  borderWidth?: number;
+  borderColor?: string;
 } & ({ svg: string; color: string; imageBytes?: undefined; tintColor?: undefined } | { imageBytes: number[]; svg?: undefined; color?: undefined; tintColor?: string });
 type AlbumShapeElementInput = {
   kind: "shape";

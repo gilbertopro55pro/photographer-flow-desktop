@@ -121,6 +121,8 @@ function OrnamentOverlay({ el, customUrl }: { el: AlbumOrnamentElement; customUr
         height: `${el.heightPct}%`,
         opacity: (el.opacity ?? 100) / 100,
         transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
+        outline: el.borderWidth ? `${el.borderWidth}px solid ${el.borderColor ?? "#fff"}` : "none",
+        outlineOffset: el.borderWidth ? `-${el.borderWidth}px` : undefined,
       }}
     >
       {customTint ? (

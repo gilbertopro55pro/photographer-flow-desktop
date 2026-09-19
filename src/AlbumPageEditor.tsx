@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { supabase } from "./supabase";
-import { previewUrlFor, fetchPhotoBytes } from "./photoApi";
+import { previewUrlFor, fetchPhotoBytes, backfillMissingPreviews } from "./photoApi";
 import { pxFromCm } from "./pxFromCm";
 import { findOrnament } from "./lib/albumOrnaments";
 import {
@@ -140,6 +140,23 @@ export default function AlbumPageEditor({
         setCustomOrnamentTabs(customOrnamentsData.tabs);
         setCustomOrnaments(customOrnamentUrls);
         setLoading(false);
+
+        // Self-heal any photo left without a preview by the now-fixed upload bug (see
+        // backfillMissingPreviews' own comment) — fire-and-forget, then re-read just the preview
+        // paths so a fix lands in THIS open editor immediately instead of needing a reopen.
+        if (withUrls.some((p) => !p.url)) {
+          backfillMissingPreviews(gallery.id).then(async () => {
+            if (cancelled) return;
+            const { data: refreshed } = await supabase
+              .from("gallery_photos")
+              .select("id, preview_storage_path")
+              .eq("gallery_id", gallery.id)
+              .returns<{ id: string; preview_storage_path: string | null }[]>();
+            if (cancelled || !refreshed) return;
+            const previewById = new Map(refreshed.map((p) => [p.id, p.preview_storage_path]));
+            setPhotos((prev) => prev.map((p) => (p.url ? p : { ...p, url: previewUrlFor(previewById.get(p.id)) })));
+          });
+        }
       } catch (err) {
         if (!cancelled) {
           setLoadError(err instanceof Error ? err.message : String(err));
@@ -235,6 +252,8 @@ export default function AlbumPageEditor({
               hPx: Math.round((el.heightPct / 100) * heightPx),
               rotation: el.rotation,
               opacity: el.opacity,
+              borderWidth: el.borderWidth,
+              borderColor: el.borderColor,
             };
             if (el.customOrnamentId) {
               const bytes = await fetchCustomOrnamentBytes(el.customOrnamentId);
