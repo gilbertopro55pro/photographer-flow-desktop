@@ -90,10 +90,14 @@ export default function AlbumBrowser({ initialGalleryId }: { initialGalleryId?: 
           const rowsById = new Map((photoRows ?? []).map((p) => [p.id, p]));
           setPreviewUrls(new Map((photoRows ?? []).map((p) => [p.id, previewUrlFor(p.preview_storage_path)])));
 
-          // Self-heal any photo left without a preview by the now-fixed upload bug (see
-          // backfillMissingPreviews' own comment) — fire-and-forget, then re-read just the
-          // preview paths so a fix shows up in this grid immediately.
-          if (photoIds.some((id) => !rowsById.get(id)?.preview_storage_path)) {
+          // Self-heal any photo this app could never build a working preview URL for — missing
+          // OR legacy (pre-.webp) path, see the AlbumPageEditor's own identical check for why both
+          // need catching — fire-and-forget, then re-read just the preview paths so a fix shows up
+          // in this grid immediately.
+          if (photoIds.some((id) => {
+            const p = rowsById.get(id)?.preview_storage_path;
+            return !p || !p.endsWith(".webp");
+          })) {
             backfillMissingPreviews(currentGalleryId).then(async () => {
               const { data: refreshed } = await supabase
                 .from("gallery_photos")

@@ -141,10 +141,16 @@ export default function AlbumPageEditor({
         setCustomOrnaments(customOrnamentUrls);
         setLoading(false);
 
-        // Self-heal any photo left without a preview by the now-fixed upload bug (see
-        // backfillMissingPreviews' own comment) — fire-and-forget, then re-read just the preview
-        // paths so a fix lands in THIS open editor immediately instead of needing a reopen.
-        if (withUrls.some((p) => !p.url)) {
+        // Self-heal any photo this app could never build a working preview URL for, for either of
+        // two reasons — no preview_storage_path at all (see backfillMissingPreviews' own comment),
+        // or a LEGACY (pre-.webp) path: those live in the old private bucket and need a signed,
+        // expiring URL, but previewUrlFor() always builds a bare public-CDN URL regardless, which
+        // 404s for a legacy path — a real broken-image glyph, not just a blank box, and NOT
+        // detectable by checking `.url` truthiness the way the null case is (a legacy path still
+        // produces a non-empty, just-wrong URL). Checking the raw preview_storage_path here instead
+        // catches both. Fire-and-forget, then re-read every photo's path so a fix lands in THIS
+        // open editor immediately instead of needing a reopen.
+        if (rows.some((p) => !p.preview_storage_path || !p.preview_storage_path.endsWith(".webp"))) {
           backfillMissingPreviews(gallery.id).then(async () => {
             if (cancelled) return;
             const { data: refreshed } = await supabase
@@ -154,7 +160,7 @@ export default function AlbumPageEditor({
               .returns<{ id: string; preview_storage_path: string | null }[]>();
             if (cancelled || !refreshed) return;
             const previewById = new Map(refreshed.map((p) => [p.id, p.preview_storage_path]));
-            setPhotos((prev) => prev.map((p) => (p.url ? p : { ...p, url: previewUrlFor(previewById.get(p.id)) })));
+            setPhotos((prev) => prev.map((p) => (previewById.has(p.id) ? { ...p, url: previewUrlFor(previewById.get(p.id)) } : p)));
           });
         }
       } catch (err) {

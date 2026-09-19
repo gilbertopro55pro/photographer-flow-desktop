@@ -17,6 +17,13 @@ type PhotoWithUrl = { id: string; url: string; is_favorite?: boolean; folder_id?
 
 const BORDER_COLORS = ["#ffffff", "#000000", "#d4af37", "#e07a5f"];
 const PX_PER_CM = 96 / 2.54;
+// Disabled per explicit request (2026-09-19) — the bottom page-switcher strip made the layout feel
+// cluttered. Kept as real, working code (not deleted) so it can come back with a single flag flip
+// — matches the web app's own pattern of disabling this exact feature via CSS rather than removing
+// the JSX (see that file's own .gf-album-pageswitcher rules). Typed `: boolean`, not inferred as
+// the literal `false`, so `&&`-chaining this in front of `spreads`/`canvasRestRect`/`onSwitchSpread`
+// checks doesn't defeat TypeScript's usual truthy-narrowing for the rest of that same chain.
+const PAGE_SWITCHER_ENABLED: boolean = false;
 // A shared cap so a given blur % looks (and exports) the same whether it's applied to a framed
 // photo or the full-page background — also the sigma sharp/PDF baking uses server-side, since
 // CSS blur(px) and sharp's Gaussian blur sigma are both "pixels of std-deviation" and line up
@@ -1748,6 +1755,12 @@ export default function AlbumSpreadCanvasEditor({
   const [textDraftOpen, setTextDraftOpen] = useState(false);
   const [textDraft, setTextDraft] = useState("");
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
+  // Background opacity/blur/zoom flyout — opened from a small button at the canvas's own
+  // bottom-left corner (see its render site) instead of an always-visible sidebar section, so
+  // those controls stay reachable without permanently taking up sidebar space.
+  const [backgroundPanelOpen, setBackgroundPanelOpen] = useState(false);
+  const [backgroundPanelRect, setBackgroundPanelRect] = useState<{ top: number; left: number; width: number } | null>(null);
+  const bgSlidersButtonRef = useRef<HTMLButtonElement>(null);
   const [masksPickerOpen, setMasksPickerOpen] = useState(false);
   const [masksPickerClosing, setMasksPickerClosing] = useState(false);
   // Anchors the masks dropdown directly below the מסכות button, at that button's own width —
@@ -3456,12 +3469,45 @@ export default function AlbumSpreadCanvasEditor({
               }}
             />
           )}
+
+          {/* Opens the background photo's opacity/blur/zoom sliders (see the flyout panel further
+              down) — placed at the canvas's own bottom-left corner rather than behind a second
+              click on the "רקע לכל העמוד" section, so it's reachable without a permanent sidebar
+              section for it. */}
+          {mode === "custom" && backgroundPhoto?.url && (
+            <button
+              ref={bgSlidersButtonRef}
+              onClick={(e) => {
+                e.stopPropagation();
+                const r = bgSlidersButtonRef.current?.getBoundingClientRect();
+                if (r) setBackgroundPanelRect({ top: Math.max(8, r.top - 210), left: r.left, width: 220 });
+                setBackgroundPanelOpen((v) => !v);
+              }}
+              title="שקיפות, טשטוש וזום רקע"
+              aria-label="שקיפות, טשטוש וזום רקע"
+              className="absolute bottom-2 left-2 z-10 h-8 w-8 rounded-full flex items-center justify-center shadow"
+              style={{
+                background: backgroundPanelOpen ? "var(--color-amber-deep)" : "#fff",
+                color: backgroundPanelOpen ? "#fff" : "#201f33",
+                boxShadow: "0 2px 6px rgba(46,49,66,0.22), 0 0 0 1px var(--color-line)",
+              }}
+            >
+              <IconOpacity />
+            </button>
+          )}
         </div>
         {anchorPhoto && menuAnchorPhoto && menuPositionStyle && (() => {
           // Used to track the selected photo's own x position (and flip left/right depending on
           // which canvas half it sat in) — dropped entirely: the menu now opens at one fixed spot
-          // on the canvas's own right edge no matter where the photo is.
-          const sidePosition: React.CSSProperties = { right: "8px", left: "auto" };
+          // on the canvas's own right edge no matter where the photo is. Anchored to the CANVAS's
+          // own right edge (via canvasRestRect), not the viewport's — web's own `right: "8px"` is
+          // viewport-relative, which assumes generous margin between the canvas and the window
+          // edge that a real desktop browser window has but this app's own (much narrower, fixed-
+          // size) Electron window does not; canvas-relative math never overlaps the canvas
+          // regardless of window size.
+          const sidePosition: React.CSSProperties = canvasRestRect
+            ? { left: Math.min(canvasRestRect.left + canvasRestRect.width + 8, window.innerWidth - 40), right: "auto" }
+            : { right: "8px", left: "auto" };
           return (
           <PhotoFloatingMenu
             el={anchorPhoto}
@@ -3492,7 +3538,13 @@ export default function AlbumSpreadCanvasEditor({
             multi-button circular strip of its own the way photos do; one button is enough since
             everything else (color/font/align/size/delete) lives inside the panel this opens. */}
         {selectedText && canvasRestRect && (
-          <div className="fixed z-20" style={{ top: canvasRestRect.top + 8, right: "8px" }}>
+          <div
+            className="fixed z-20"
+            // Anchored to the CANVAS's own right edge (not the viewport's — see the circular photo
+            // menu's own sidePosition comment for why) so this button never lands on top of the
+            // canvas in this app's narrower, fixed-size Electron window.
+            style={{ top: canvasRestRect.top + 8, left: Math.min(canvasRestRect.left + canvasRestRect.width + 8, window.innerWidth - 40) }}
+          >
             <CircleButton label="עריכת טקסט — גופן, צבע, יישור ועוד" active={textPanelOpen} onClick={() => setTextPanelOpen((v) => !v)}>
               <span className="font-display font-bold" style={{ fontSize: 15 }}>T</span>
             </CircleButton>
@@ -3518,8 +3570,13 @@ export default function AlbumSpreadCanvasEditor({
             className="fixed z-20"
             style={{
               top: panelTopPx,
+              // Clamped so the panel's own RIGHT edge never crosses the canvas's own left edge —
+              // web's version only ever pushes the panel further left (via panelLeftShiftPx) on the
+              // assumption there's always enough margin between the canvas and the window edge for
+              // that; this app's narrower, fixed-size Electron window doesn't guarantee that
+              // margin, so without this clamp the panel could land on top of the canvas.
               left: openOnLeft
-                ? Math.max(8, canvasRestRect.left + 8 - (lastSideSelection.type === "photo" ? panelLeftShiftPx : 0))
+                ? Math.max(8, Math.min(canvasRestRect.left + 8 - (lastSideSelection.type === "photo" ? panelLeftShiftPx : 0), canvasRestRect.left - panelWidth - 8))
                 : Math.max(canvasRestRect.left + 8, Math.min(canvasRestRect.left + canvasRestRect.width - panelWidth - 8, window.innerWidth - panelWidth - 16)),
               // The open/close slide-in transform composes with the free drag offset by appending a
               // second translate() — CSS applies multiple translate()s additively, so the panel
@@ -3580,7 +3637,9 @@ export default function AlbumSpreadCanvasEditor({
             className="fixed z-[25]"
             style={{
               top: canvasRestRect.top,
-              left: Math.max(8, canvasRestRect.left + 8 - panelLeftShiftPx),
+              // Same canvas-overlap clamp as the "עריכת תמונה" panel below it — see that panel's
+              // own comment.
+              left: Math.max(8, Math.min(canvasRestRect.left + 8 - panelLeftShiftPx, canvasRestRect.left - photoPanelSize.width - 8)),
               transform: `translate(${sidePanelDrag.offset.x}px, ${sidePanelDrag.offset.y}px)`,
             }}
           >
@@ -3595,12 +3654,16 @@ export default function AlbumSpreadCanvasEditor({
         </div>
         </div>
 
-        {/* The current page used to be filtered OUT of this list, which meant every page switch
+        {/* Disabled per explicit request (2026-09-19) — the strip made the layout feel cluttered.
+            Kept as real, working code (not deleted) so it can come back with a single flag flip;
+            matches the web app's own pattern of disabling this exact feature via CSS rather than
+            removing the JSX (see AlbumSpreadCanvasEditor.tsx's own .gf-album-pageswitcher rules).
+            The current page used to be filtered OUT of this list, which meant every page switch
             removed a different item from the strip and the whole row visibly reflowed even though
             the underlying page order never actually changed. Always rendering every page keeps the
             row's order and positions stable across switches; the current one is just marked
             instead of vanishing. */}
-        {mode === "custom" && spreads && spreads.length > 1 && onSwitchSpread && (
+        {PAGE_SWITCHER_ENABLED && mode === "custom" && spreads && spreads.length > 1 && onSwitchSpread && (
           // Pinned to the canvas's own actually-rendered width (not the wider column it sits in —
           // the canvas itself can be narrower than the column once its own aspect ratio makes
           // height the binding dimension) and centered under it, with a thin separator line above
@@ -3650,6 +3713,159 @@ export default function AlbumSpreadCanvasEditor({
             </div>
           </div>
         )}
+        </div>
+
+        {/* Controls sidebar — stacks below the canvas on mobile same as before; becomes an
+            independently-scrolling side column on desktop so a tall control list never forces
+            the canvas itself to scroll out of view. */}
+        <div className="lg:w-[380px] lg:shrink-0 lg:overflow-y-auto lg:pr-1 lg:min-h-0">
+        {selectedElements.length > 0 && (
+          <div className="space-y-2 mt-2.5">
+            {selectedText && (
+              <p className="text-[11px] text-ink-soft text-center flex items-center justify-center gap-1">
+                <IconInfo size={13} />
+                צבע, יישור, גופן, גודל ומחיקה נמצאים בתפריט הצף ליד הטקסט
+              </p>
+            )}
+            {selectedOrnament && (
+              <p className="text-[11px] text-ink-soft text-center flex items-center justify-center gap-1">
+                <IconInfo size={13} />
+                צבע, שקיפות, סיבוב, סדר שכבות ומחיקה נמצאים בתפריט הצף ליד העיטור
+              </p>
+            )}
+            {selectedShape && (
+              <p className="text-[11px] text-ink-soft text-center flex items-center justify-center gap-1">
+                <IconInfo size={13} />
+                צבע, מסכה, שקיפות, סיבוב, סדר שכבות ומחיקה נמצאים בתפריט הצף ליד הצורה
+              </p>
+            )}
+            {selectedPhotos.length === 1 && anchorPhoto && (
+              <p className="text-[11px] text-ink-soft text-center flex items-center justify-center gap-1">
+                <IconInfo size={13} />
+                לחצו על התמונה כדי לפתוח את תפריט העיצוב הצף (שחור-לבן, ספיה, שקיפות, טשטוש, סיבוב, צל וקו מתאר)
+              </p>
+            )}
+            {selectedPhotos.length > 1 && (
+              <p className="text-[11px] text-ink-soft text-center flex items-center justify-center gap-1">
+                <IconInfo size={13} />
+                נבחרו {selectedPhotos.length} תמונות — גרירה, שינוי גודל ופעולות מהתפריט הצף יחולו על כולן
+              </p>
+            )}
+            <button onClick={removeSelected} className="w-full h-8 rounded-full bg-chip text-rose text-xs font-semibold">
+              מחיקה
+            </button>
+          </div>
+        )}
+
+        <div className="mt-3 pt-3 border-t border-line">
+          <p className="text-[11px] font-bold text-ink-soft mb-1.5">רקע לכל העמוד</p>
+          {backgroundPhoto?.url ? (
+            <div className="space-y-2">
+              <div className="relative h-16 rounded-lg overflow-hidden">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={backgroundPhoto.url} alt="" className="w-full h-full object-cover" style={{ opacity: backgroundOpacity / 100 }} />
+                <button onClick={removeBackground} className="absolute top-1 left-1 h-6 w-6 rounded-full bg-black/60 text-white text-xs flex items-center justify-center">
+                  <IconClose size={13} />
+                </button>
+              </div>
+              {/* שקיפות/טשטוש/זום live in a floating panel now — opened from a small button at the
+                  canvas's own bottom-left corner (see its render site) — instead of always taking
+                  up sidebar space here. */}
+            </div>
+          ) : (
+            <button onClick={openPickerForBackground} className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink">
+              + בחירת תמונת רקע
+            </button>
+          )}
+        </div>
+
+        <div className="flex gap-2 mt-3">
+          {mode === "custom" && (
+            <>
+              <button
+                ref={photoSizeButtonRef}
+                onClick={() => {
+                  const rect = photoSizeButtonRef.current?.getBoundingClientRect();
+                  if (rect) setPhotoSizePanelRect({ top: rect.bottom, left: rect.left, width: Math.max(rect.width, 190) });
+                  setPhotoSizePickerOpen(true);
+                }}
+                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink"
+              >
+                + תמונה
+              </button>
+              <button onClick={addFrame} className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink">
+                + מסגרת
+              </button>
+              <button onClick={() => setTemplatePickerOpen(true)} className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink flex items-center justify-center gap-1.5">
+                <IconGrid size={14} />
+                תבניות
+              </button>
+            </>
+          )}
+          <button onClick={() => setTextDraftOpen(true)} className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink">
+            + טקסט
+          </button>
+        </div>
+        {mode === "custom" && (
+          <button
+            ref={masksButtonRef}
+            onClick={() => {
+              const r = masksButtonRef.current?.getBoundingClientRect();
+              if (r) setMasksPanelRect({ top: r.bottom, left: r.left, width: r.width });
+              setMasksPickerOpen(true);
+            }}
+            className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink mt-2 flex items-center justify-center gap-1.5"
+          >
+            <IconMask size={14} />
+            מסכות — גררו על תמונה כדי להחיל
+          </button>
+        )}
+        {mode === "custom" && (
+          <button
+            ref={ornamentsButtonRef}
+            onClick={() => {
+              const r = ornamentsButtonRef.current?.getBoundingClientRect();
+              if (r) setOrnamentsPanelRect({ top: r.bottom, left: r.left, width: r.width });
+              setOrnamentsPickerOpen(true);
+            }}
+            className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink mt-2 flex items-center justify-center gap-1.5"
+          >
+            <IconOrnament size={14} />
+            עיטורים
+          </button>
+        )}
+        {mode === "custom" && (
+          <button
+            ref={shapesButtonRef}
+            onClick={() => {
+              const r = shapesButtonRef.current?.getBoundingClientRect();
+              if (r) setShapesPanelRect({ top: r.bottom, left: r.left, width: r.width });
+              setShapesPickerOpen(true);
+            }}
+            className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink mt-2 flex items-center justify-center gap-1.5"
+          >
+            <IconShape size={14} />
+            צורות
+          </button>
+        )}
+
+        {mode === "custom" && (
+          <button
+            onClick={() => setSaveTemplateOpen(true)}
+            disabled={!elements.some((e) => e.type === "photo")}
+            className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink mt-2 disabled:opacity-50 flex items-center justify-center gap-1.5"
+          >
+            <IconSave size={14} />
+            שמירת הפריסה כתבנית
+          </button>
+        )}
+
+        <button
+          onClick={() => onSave(elements, { photoId: backgroundPhotoId, blur: backgroundBlur, opacity: backgroundOpacity, zoom: backgroundZoom })}
+          className="w-full rounded-lg py-3 text-sm font-semibold bg-ink text-white mt-2.5"
+        >
+          שמירה
+        </button>
 
         {mode === "custom" && (
           <div className="mt-3 pt-3 border-t border-line">
@@ -3838,159 +4054,6 @@ export default function AlbumSpreadCanvasEditor({
           </div>
         )}
         </div>
-
-        {/* Controls sidebar — stacks below the canvas on mobile same as before; becomes an
-            independently-scrolling side column on desktop so a tall control list never forces
-            the canvas itself to scroll out of view. */}
-        <div className="lg:w-[380px] lg:shrink-0 lg:overflow-y-auto lg:pr-1 lg:min-h-0">
-        {selectedElements.length > 0 && (
-          <div className="space-y-2 mt-2.5">
-            {selectedText && (
-              <p className="text-[11px] text-ink-soft text-center flex items-center justify-center gap-1">
-                <IconInfo size={13} />
-                צבע, יישור, גופן, גודל ומחיקה נמצאים בתפריט הצף ליד הטקסט
-              </p>
-            )}
-            {selectedOrnament && (
-              <p className="text-[11px] text-ink-soft text-center flex items-center justify-center gap-1">
-                <IconInfo size={13} />
-                צבע, שקיפות, סיבוב, סדר שכבות ומחיקה נמצאים בתפריט הצף ליד העיטור
-              </p>
-            )}
-            {selectedShape && (
-              <p className="text-[11px] text-ink-soft text-center flex items-center justify-center gap-1">
-                <IconInfo size={13} />
-                צבע, מסכה, שקיפות, סיבוב, סדר שכבות ומחיקה נמצאים בתפריט הצף ליד הצורה
-              </p>
-            )}
-            {selectedPhotos.length === 1 && anchorPhoto && (
-              <p className="text-[11px] text-ink-soft text-center flex items-center justify-center gap-1">
-                <IconInfo size={13} />
-                לחצו על התמונה כדי לפתוח את תפריט העיצוב הצף (שחור-לבן, ספיה, שקיפות, טשטוש, סיבוב, צל וקו מתאר)
-              </p>
-            )}
-            {selectedPhotos.length > 1 && (
-              <p className="text-[11px] text-ink-soft text-center flex items-center justify-center gap-1">
-                <IconInfo size={13} />
-                נבחרו {selectedPhotos.length} תמונות — גרירה, שינוי גודל ופעולות מהתפריט הצף יחולו על כולן
-              </p>
-            )}
-            <button onClick={removeSelected} className="w-full h-8 rounded-full bg-chip text-rose text-xs font-semibold">
-              מחיקה
-            </button>
-          </div>
-        )}
-
-        <div className="mt-3 pt-3 border-t border-line">
-          <p className="text-[11px] font-bold text-ink-soft mb-1.5">רקע לכל העמוד</p>
-          {backgroundPhoto?.url ? (
-            <div className="space-y-2">
-              <div className="relative h-16 rounded-lg overflow-hidden">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={backgroundPhoto.url} alt="" className="w-full h-full object-cover" style={{ opacity: backgroundOpacity / 100 }} />
-                <button onClick={removeBackground} className="absolute top-1 left-1 h-6 w-6 rounded-full bg-black/60 text-white text-xs flex items-center justify-center">
-                  <IconClose size={13} />
-                </button>
-              </div>
-              <SliderControl label="שקיפות רקע" value={backgroundOpacity} min={0} max={100} unit="%" onChange={setBackgroundOpacity} />
-              <SliderControl label="טשטוש רקע (Blur)" value={backgroundBlur} min={0} max={100} unit="%" onChange={setBackgroundBlur} />
-              <SliderControl label="זום רקע" value={backgroundZoom} min={100} max={400} unit="%" onChange={setBackgroundZoom} />
-            </div>
-          ) : (
-            <button onClick={openPickerForBackground} className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink">
-              + בחירת תמונת רקע
-            </button>
-          )}
-        </div>
-
-        <div className="flex gap-2 mt-3">
-          {mode === "custom" && (
-            <>
-              <button
-                ref={photoSizeButtonRef}
-                onClick={() => {
-                  const rect = photoSizeButtonRef.current?.getBoundingClientRect();
-                  if (rect) setPhotoSizePanelRect({ top: rect.bottom, left: rect.left, width: Math.max(rect.width, 190) });
-                  setPhotoSizePickerOpen(true);
-                }}
-                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink"
-              >
-                + תמונה
-              </button>
-              <button onClick={addFrame} className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink">
-                + מסגרת
-              </button>
-              <button onClick={() => setTemplatePickerOpen(true)} className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink flex items-center justify-center gap-1.5">
-                <IconGrid size={14} />
-                תבניות
-              </button>
-            </>
-          )}
-          <button onClick={() => setTextDraftOpen(true)} className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink">
-            + טקסט
-          </button>
-        </div>
-        {mode === "custom" && (
-          <button
-            ref={masksButtonRef}
-            onClick={() => {
-              const r = masksButtonRef.current?.getBoundingClientRect();
-              if (r) setMasksPanelRect({ top: r.bottom, left: r.left, width: r.width });
-              setMasksPickerOpen(true);
-            }}
-            className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink mt-2 flex items-center justify-center gap-1.5"
-          >
-            <IconMask size={14} />
-            מסכות — גררו על תמונה כדי להחיל
-          </button>
-        )}
-        {mode === "custom" && (
-          <button
-            ref={ornamentsButtonRef}
-            onClick={() => {
-              const r = ornamentsButtonRef.current?.getBoundingClientRect();
-              if (r) setOrnamentsPanelRect({ top: r.bottom, left: r.left, width: r.width });
-              setOrnamentsPickerOpen(true);
-            }}
-            className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink mt-2 flex items-center justify-center gap-1.5"
-          >
-            <IconOrnament size={14} />
-            עיטורים
-          </button>
-        )}
-        {mode === "custom" && (
-          <button
-            ref={shapesButtonRef}
-            onClick={() => {
-              const r = shapesButtonRef.current?.getBoundingClientRect();
-              if (r) setShapesPanelRect({ top: r.bottom, left: r.left, width: r.width });
-              setShapesPickerOpen(true);
-            }}
-            className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink mt-2 flex items-center justify-center gap-1.5"
-          >
-            <IconShape size={14} />
-            צורות
-          </button>
-        )}
-
-        {mode === "custom" && (
-          <button
-            onClick={() => setSaveTemplateOpen(true)}
-            disabled={!elements.some((e) => e.type === "photo")}
-            className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink mt-2 disabled:opacity-50 flex items-center justify-center gap-1.5"
-          >
-            <IconSave size={14} />
-            שמירת הפריסה כתבנית
-          </button>
-        )}
-
-        <button
-          onClick={() => onSave(elements, { photoId: backgroundPhotoId, blur: backgroundBlur, opacity: backgroundOpacity, zoom: backgroundZoom })}
-          className="w-full rounded-lg py-3 text-sm font-semibold bg-ink text-white mt-2.5"
-        >
-          שמירה
-        </button>
-        </div>
       </div>
 
       {photoPickerOpen && (
@@ -4143,6 +4206,35 @@ export default function AlbumSpreadCanvasEditor({
             )}
           </div>
         </div>
+      )}
+
+      {backgroundPanelOpen && backgroundPanelRect && backgroundPhoto?.url && (
+        <>
+          <div className="fixed inset-0 z-[84]" onClick={() => setBackgroundPanelOpen(false)} />
+          <div
+            className="fixed z-[85] rounded-xl p-3 bg-paper shadow-sheet space-y-2.5"
+            style={{ top: backgroundPanelRect.top + 4, left: backgroundPanelRect.left, width: backgroundPanelRect.width }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="relative h-20 rounded-lg overflow-hidden">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={backgroundPhoto.url} alt="" className="w-full h-full object-cover" style={{ opacity: backgroundOpacity / 100 }} />
+              {/* Just closes the flyout — deliberately does NOT remove the background photo (that
+                  has its own dedicated controls: "הסרה" in the picker/thumbnail area) — this X
+                  should only dismiss the panel and keep whatever opacity/blur/zoom was already
+                  set, same as clicking the backdrop does. */}
+              <button
+                onClick={() => setBackgroundPanelOpen(false)}
+                className="absolute top-1 left-1 h-6 w-6 rounded-full bg-black/60 text-white text-xs flex items-center justify-center"
+              >
+                <IconClose size={13} />
+              </button>
+            </div>
+            <SliderControl label="שקיפות רקע" value={backgroundOpacity} min={0} max={100} unit="%" onChange={setBackgroundOpacity} />
+            <SliderControl label="טשטוש רקע (Blur)" value={backgroundBlur} min={0} max={100} unit="%" onChange={setBackgroundBlur} />
+            <SliderControl label="זום רקע" value={backgroundZoom} min={100} max={400} unit="%" onChange={setBackgroundZoom} />
+          </div>
+        </>
       )}
 
       {(masksPickerOpen || masksPickerClosing) && masksPanelRect && (
