@@ -1,9 +1,9 @@
-import { app, BrowserWindow, BrowserView, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, BrowserView, dialog, ipcMain, powerSaveBlocker, shell } from "electron";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import unzipper from "unzipper";
-import { writeTestPsd, writeAlbumPagePsd, type ExportElement, type ExportBackground } from "./psdWriter.js";
+import { writeTestPsd } from "./psdWriter.js";
+import { AlbumExportJob, type ExportJobInput, type ExportResult } from "./albumExport.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // app.isPackaged is false for any unpackaged run (including "load the built dist/ folder without
@@ -223,56 +223,37 @@ ipcMain.handle("shell:openPath", async (_event, targetPath: string) => {
   return error || null;
 });
 
-// The album export flow (page range → PSD/PDF/JPG) fetches the actual file bytes on the
-// RENDERER side (it already has network access via fetch and the bearer token) — only the
-// filesystem write needs the main process, same reasoning as pickImageFiles above.
-ipcMain.handle("fs:saveBytesToFile", async (_event, folderPath: string, filename: string, bytes: number[]) => {
-  const filePath = path.join(folderPath, filename);
-  await fs.writeFile(filePath, Buffer.from(bytes));
-  return filePath;
-});
+// Local album export (PSD / JPG / PDF) — the whole render pipeline runs in THIS process on the
+// user's own computer (see albumExport.ts); the renderer only starts it, watches progress and can
+// cancel. One export at a time: a second start while one is running is refused rather than queued.
+// The power-save blocker keeps the machine from sleeping mid-export (a long album can take minutes).
+let activeExport: AlbumExportJob | null = null;
 
-// The batch PSD/JPG export routes return a zip (one file per page) — extracted here since the
-// renderer has no filesystem access at all under contextIsolation. Returns every extracted path
-// so the renderer can open a specific file afterward (e.g. the first .psd, to try launching
-// Photoshop) rather than just the containing folder.
-ipcMain.handle("fs:saveZipToFolder", async (_event, folderPath: string, zipBytes: number[]) => {
-  const directory = await unzipper.Open.buffer(Buffer.from(zipBytes));
-  const extractedPaths: string[] = [];
-  for (const entry of directory.files) {
-    if (entry.type !== "File") continue;
-    const destPath = path.join(folderPath, entry.path);
-    await fs.mkdir(path.dirname(destPath), { recursive: true });
-    const content = await entry.buffer();
-    await fs.writeFile(destPath, content);
-    extractedPaths.push(destPath);
-  }
-  return extractedPaths;
-});
-
-// Stage 3: the full pipeline — every effect the web editor can produce (masks, border, shadow,
-// rotation, opacity, blur, filter, zoom, text elements, page background), composited exactly like
-// the web app's albumRaster.ts/albumPsd.ts, into real PSD layers. imageBytes travels over IPC as a
-// plain array (structured-clone doesn't reliably preserve Uint8Array typed-ness across the
-// renderer/main boundary in all Electron versions) and gets rewrapped here.
-type WireOrnamentElement = Omit<Extract<ExportElement, { kind: "ornament" }>, "imageBytes"> & { imageBytes?: number[] };
-type WireElement =
-  | (Omit<Extract<ExportElement, { kind: "photo" }>, "imageBytes"> & { imageBytes: number[] })
-  | Extract<ExportElement, { kind: "text" }>
-  | WireOrnamentElement
-  | Extract<ExportElement, { kind: "shape" }>;
-type WireBackground = { imageBytes: number[]; blur: number; opacity: number; zoom?: number } | null;
-
-ipcMain.handle(
-  "psd:writeAlbumPage",
-  async (_event, savePath: string, widthPx: number, heightPx: number, elements: WireElement[], background: WireBackground) => {
-    const rewrapped: ExportElement[] = elements.map((el) => {
-      if (el.kind === "photo") return { ...el, imageBytes: new Uint8Array(el.imageBytes) };
-      if (el.kind === "ornament" && el.imageBytes) return { ...el, imageBytes: new Uint8Array(el.imageBytes), svg: undefined, color: undefined } as ExportElement;
-      return el as ExportElement;
+ipcMain.handle("album:export", async (event, input: ExportJobInput): Promise<{ ok: true; result: ExportResult } | { ok: false; error: string }> => {
+  if (activeExport) return { ok: false, error: "כבר רץ ייצוא — המתינו לסיומו או בטלו אותו" };
+  const job = new AlbumExportJob(input);
+  activeExport = job;
+  const blockerId = powerSaveBlocker.start("prevent-app-suspension");
+  try {
+    const result = await job.run((progress) => {
+      if (!event.sender.isDestroyed()) event.sender.send("album:export-progress", progress);
     });
-    const rewrappedBackground: ExportBackground = background ? { ...background, imageBytes: new Uint8Array(background.imageBytes) } : null;
-    await writeAlbumPagePsd(savePath, widthPx, heightPx, rewrapped, rewrappedBackground);
-    return true;
+    return { ok: true, result };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "שגיאה לא ידועה בייצוא" };
+  } finally {
+    powerSaveBlocker.stop(blockerId);
+    activeExport = null;
   }
-);
+});
+
+ipcMain.handle("album:export-cancel", () => {
+  activeExport?.cancel();
+  return true;
+});
+
+// The renderer's Supabase session auto-refreshes; it pushes each fresh access token here so an
+// export longer than one token lifetime keeps downloading originals without failing halfway.
+ipcMain.on("album:export-token", (_event, token: string) => {
+  activeExport?.updateToken(token);
+});

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { ExportElement } from "./psdWriter.js";
+import type { ExportJobInput, ExportProgress, ExportResult } from "./albumExport.js";
 
 // Everything the renderer is allowed to touch on the native side — intentionally narrow rather
 // than exposing ipcRenderer directly, so the renderer (which will eventually load third-party-ish
@@ -10,14 +10,6 @@ import type { ExportElement } from "./psdWriter.js";
 // doesn't reliably run those (contextBridge.exposeInMainWorld silently never executes), which is
 // exactly what left window.desktopApi undefined. TypeScript always emits .cts as CommonJS (.cjs)
 // regardless of the module compiler option, sidestepping the whole ESM-preload problem.
-type WireOrnamentElement = Omit<Extract<ExportElement, { kind: "ornament" }>, "imageBytes"> & { imageBytes?: number[] };
-type WireElement =
-  | (Omit<Extract<ExportElement, { kind: "photo" }>, "imageBytes"> & { imageBytes: number[] })
-  | Extract<ExportElement, { kind: "text" }>
-  | WireOrnamentElement
-  | Extract<ExportElement, { kind: "shape" }>;
-type WireBackground = { imageBytes: number[]; blur: number; opacity: number; zoom?: number } | null;
-
 contextBridge.exposeInMainWorld("desktopApi", {
   // Hybrid-app shell: tells main which mode to show (the real website, or this native album
   // editor) — see main.ts's ipcMain.on handlers for what each one does.
@@ -39,9 +31,15 @@ contextBridge.exposeInMainWorld("desktopApi", {
   readFileBytes: (filePath: string): Promise<{ name: string; bytes: number[]; sizeBytes: number }> =>
     ipcRenderer.invoke("fs:readFileBytes", filePath),
   openPath: (targetPath: string): Promise<string | null> => ipcRenderer.invoke("shell:openPath", targetPath),
-  saveBytesToFile: (folderPath: string, filename: string, bytes: number[]): Promise<string> => ipcRenderer.invoke("fs:saveBytesToFile", folderPath, filename, bytes),
-  saveZipToFolder: (folderPath: string, zipBytes: number[]): Promise<string[]> => ipcRenderer.invoke("fs:saveZipToFolder", folderPath, zipBytes),
   writeTestPsd: (savePath: string): Promise<boolean> => ipcRenderer.invoke("psd:writeTest", savePath),
-  writeAlbumPagePsd: (savePath: string, widthPx: number, heightPx: number, elements: WireElement[], background: WireBackground): Promise<boolean> =>
-    ipcRenderer.invoke("psd:writeAlbumPage", savePath, widthPx, heightPx, elements, background),
+  exportAlbum: (input: ExportJobInput): Promise<{ ok: true; result: ExportResult } | { ok: false; error: string }> => ipcRenderer.invoke("album:export", input),
+  cancelAlbumExport: (): Promise<boolean> => ipcRenderer.invoke("album:export-cancel"),
+  updateExportToken: (token: string): void => {
+    ipcRenderer.send("album:export-token", token);
+  },
+  onAlbumExportProgress: (callback: (progress: ExportProgress) => void): (() => void) => {
+    const listener = (_event: unknown, progress: ExportProgress) => callback(progress);
+    ipcRenderer.on("album:export-progress", listener);
+    return () => ipcRenderer.removeListener("album:export-progress", listener);
+  },
 });

@@ -1,81 +1,25 @@
+import type { GalleryAlbumRow, GalleryAlbumSpreadRow } from "../src/types";
+
 export {};
 
-type AlbumPhotoElementInput = {
-  kind: "photo";
-  name: string;
-  imageBytes: number[];
-  xPx: number;
-  yPx: number;
-  wPx: number;
-  hPx: number;
-  focalX: number;
-  focalY: number;
-  filter?: "none" | "bw" | "sepia";
-  borderWidth?: number;
-  borderColor?: string;
-  rotation?: number;
-  opacity?: number;
-  blur?: number;
-  shadow?: number;
-  shadowDistance?: number;
-  shadowBlur?: number;
-  zoom?: number;
-  maskId?: string;
-  // Ported from the web app's own export pipeline — same shape as PhotoAdjustments
-  // (src/lib/albumAdjustments.ts), inlined here to match this file's own no-import convention.
-  adjustments?: {
-    exposure?: number;
-    contrast?: number;
-    highlights?: number;
-    shadows2?: number;
-    whites?: number;
-    blacks?: number;
-    temp?: number;
-    tint?: number;
-    vibrance?: number;
-    saturation2?: number;
-  };
-  sharpness?: number;
+// Mirrors electron/albumExport.ts's job/progress/result shapes — duplicated here (not imported)
+// because that file is Node-side code the renderer's tsconfig must never pull in.
+type ExportJobInput = {
+  format: "psd" | "jpg" | "pdf";
+  folder?: string;
+  savePath?: string;
+  albumTitle: string;
+  galleryTitle: string;
+  album: GalleryAlbumRow;
+  spreads: GalleryAlbumSpreadRow[];
+  fromPage: number;
+  toPage: number;
+  pdfQuality?: "light" | "full";
+  baseUrl: string;
+  accessToken: string;
 };
-type AlbumTextElementInput = {
-  kind: "text";
-  text: string;
-  xPx: number;
-  yPx: number;
-  widthPx: number;
-  fontSizePx: number;
-  color: string;
-  align: "right" | "center" | "left";
-  fontFamily?: string;
-};
-type AlbumOrnamentElementInput = {
-  kind: "ornament";
-  xPx: number;
-  yPx: number;
-  wPx: number;
-  hPx: number;
-  rotation?: number;
-  opacity?: number;
-  borderWidth?: number;
-  borderColor?: string;
-} & ({ svg: string; color: string; imageBytes?: undefined; tintColor?: undefined } | { imageBytes: number[]; svg?: undefined; color?: undefined; tintColor?: string });
-type AlbumShapeElementInput = {
-  kind: "shape";
-  xPx: number;
-  yPx: number;
-  wPx: number;
-  hPx: number;
-  color: string;
-  rotation?: number;
-  opacity?: number;
-  maskId?: string;
-  shadow?: number;
-  borderWidth?: number;
-  borderColor?: string;
-  shapeStyle?: "rect-outline" | "circle-outline" | "line";
-};
-type AlbumPageElementInput = AlbumPhotoElementInput | AlbumTextElementInput | AlbumOrnamentElementInput | AlbumShapeElementInput;
-type AlbumPageBackgroundInput = { imageBytes: number[]; blur: number; opacity: number; zoom?: number } | null;
+type ExportProgress = { processed: number; total: number; pageLabel: string };
+type ExportResult = { cancelled: boolean; files: string[]; folder: string };
 
 declare global {
   interface Window {
@@ -89,16 +33,11 @@ declare global {
       pickImageFilePaths: () => Promise<string[]>;
       readFileBytes: (filePath: string) => Promise<{ name: string; bytes: number[]; sizeBytes: number }>;
       openPath: (targetPath: string) => Promise<string | null>;
-      saveBytesToFile: (folderPath: string, filename: string, bytes: number[]) => Promise<string>;
-      saveZipToFolder: (folderPath: string, zipBytes: number[]) => Promise<string[]>;
       writeTestPsd: (savePath: string) => Promise<boolean>;
-      writeAlbumPagePsd: (
-        savePath: string,
-        widthPx: number,
-        heightPx: number,
-        elements: AlbumPageElementInput[],
-        background: AlbumPageBackgroundInput
-      ) => Promise<boolean>;
+      exportAlbum: (input: ExportJobInput) => Promise<{ ok: true; result: ExportResult } | { ok: false; error: string }>;
+      cancelAlbumExport: () => Promise<boolean>;
+      updateExportToken: (token: string) => void;
+      onAlbumExportProgress: (callback: (progress: ExportProgress) => void) => () => void;
     };
   }
 }

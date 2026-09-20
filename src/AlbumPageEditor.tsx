@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "./supabase";
-import { previewUrlFor, fetchPhotoBytes, backfillMissingPreviews } from "./photoApi";
-import { pxFromCm } from "./pxFromCm";
-import { findOrnament } from "./lib/albumOrnaments";
+import { previewUrlFor, backfillMissingPreviews, WEB_APP_URL } from "./photoApi";
+import { ProgressModal } from "./ProgressModal";
 import {
   fetchCustomOrnaments,
   createCustomOrnamentTab,
@@ -45,10 +44,6 @@ export default function AlbumPageEditor({
   onSwitchSpread?: (spreadId: string) => void;
 }) {
   const [photos, setPhotos] = useState<PhotoWithUrl[]>([]);
-  // Kept separately from `photos` (which only carries the lightweight preview URL) — real export
-  // needs original_filename for PSD layer names and re-fetches full bytes on demand via
-  // fetchPhotoBytes, so this just needs to remember which DB row goes with which id.
-  const [photoRowsById, setPhotoRowsById] = useState<Map<string, GalleryPhotoRow>>(new Map());
   const [folders, setFolders] = useState<GalleryFolderRow[]>([]);
   const [templates, setTemplates] = useState<AlbumTemplateRow[]>([]);
   const [usedElsewhere, setUsedElsewhere] = useState<Set<string>>(new Set());
@@ -133,7 +128,6 @@ export default function AlbumPageEditor({
 
         if (cancelled) return;
         setPhotos(withUrls);
-        setPhotoRowsById(new Map(rows.map((p) => [p.id, p])));
         setFolders(folderRows ?? []);
         setTemplates(templateRows ?? []);
         setUsedElsewhere(used);
@@ -223,126 +217,42 @@ export default function AlbumPageEditor({
   // pages now open straight into this editor instead of stopping at an in-between detail screen
   // first). Exports the page's last-SAVED elements (this editor's own in-progress unsaved edits
   // aren't reflected until saved) as a real multi-layer .psd, one layer per photo, cut and
-  // positioned exactly as shown (including focal point).
+  // positioned exactly as shown. Runs entirely on this computer via the same local export engine as
+  // the album-wide export (electron/albumExport.ts) — a one-page job written to the chosen file.
+  const [exportPsdProgress, setExportPsdProgress] = useState<number | null>(null);
   const exportRealPsd = async () => {
     setExportingPsd(true);
     setExportPsdStatus(null);
+    let stopProgress: (() => void) | null = null;
     try {
       const savePath = await window.desktopApi.pickSavePath(`עמוד-${spread.sort_order + 1}.psd`);
-      if (!savePath) {
-        setExportingPsd(false);
-        return;
-      }
-      const widthPx = pxFromCm(spread.width_cm ?? album.width_cm);
-      const heightPx = pxFromCm(spread.height_cm ?? album.height_cm);
-      const elements = await Promise.all(
-        spread.elements.map(async (el) => {
-          if (el.type === "text") {
-            return {
-              kind: "text" as const,
-              text: el.text,
-              xPx: Math.round((el.xPct / 100) * widthPx),
-              yPx: Math.round((el.yPct / 100) * heightPx),
-              widthPx: Math.round((el.widthPct / 100) * widthPx),
-              fontSizePx: (el.fontSize / 1600) * widthPx,
-              color: el.color,
-              align: el.align,
-              fontFamily: el.fontFamily,
-            };
-          }
-          if (el.type === "ornament") {
-            const basePosition = {
-              xPx: Math.round((el.xPct / 100) * widthPx),
-              yPx: Math.round((el.yPct / 100) * heightPx),
-              wPx: Math.round((el.widthPct / 100) * widthPx),
-              hPx: Math.round((el.heightPct / 100) * heightPx),
-              rotation: el.rotation,
-              opacity: el.opacity,
-              borderWidth: el.borderWidth,
-              borderColor: el.borderColor,
-            };
-            if (el.customOrnamentId) {
-              const bytes = await fetchCustomOrnamentBytes(el.customOrnamentId);
-              return { kind: "ornament" as const, ...basePosition, imageBytes: Array.from(new Uint8Array(bytes)), tintColor: el.color };
-            }
-            const ornament = findOrnament(el.ornamentId);
-            if (!ornament) return null;
-            return { kind: "ornament" as const, ...basePosition, svg: ornament.svg, color: el.color ?? "#2e3142" };
-          }
-          if (el.type === "shape") {
-            return {
-              kind: "shape" as const,
-              xPx: Math.round((el.xPct / 100) * widthPx),
-              yPx: Math.round((el.yPct / 100) * heightPx),
-              wPx: Math.round((el.widthPct / 100) * widthPx),
-              hPx: Math.round((el.heightPct / 100) * heightPx),
-              color: el.color,
-              rotation: el.rotation,
-              opacity: el.opacity,
-              maskId: el.maskId,
-              shadow: el.shadow,
-              borderWidth: el.borderWidth,
-              borderColor: el.borderColor,
-              shapeStyle: el.shapeStyle,
-            };
-          }
-          if (!el.photoId) return null;
-          const bytes = await fetchPhotoBytes(el.photoId);
-          return {
-            kind: "photo" as const,
-            name: photoRowsById.get(el.photoId)?.original_filename ?? el.photoId,
-            xPx: Math.round((el.xPct / 100) * widthPx),
-            yPx: Math.round((el.yPct / 100) * heightPx),
-            wPx: Math.round((el.widthPct / 100) * widthPx),
-            hPx: Math.round((el.heightPct / 100) * heightPx),
-            focalX: el.focalX,
-            focalY: el.focalY,
-            filter: el.filter,
-            borderWidth: el.borderWidth,
-            borderColor: el.borderColor,
-            rotation: el.rotation,
-            opacity: el.opacity,
-            blur: el.blur,
-            shadow: el.shadow,
-            shadowDistance: el.shadowDistance,
-            shadowBlur: el.shadowBlur,
-            zoom: el.zoom,
-            maskId: el.maskId,
-            // Ported from the web app's own export pipeline — same fields hasAdjustments checks.
-            adjustments: {
-              exposure: el.exposure,
-              contrast: el.contrast,
-              highlights: el.highlights,
-              shadows2: el.shadows2,
-              whites: el.whites,
-              blacks: el.blacks,
-              temp: el.temp,
-              tint: el.tint,
-              vibrance: el.vibrance,
-              saturation2: el.saturation2,
-            },
-            sharpness: el.sharpness,
-            imageBytes: Array.from(new Uint8Array(bytes)),
-          };
-        })
-      );
-      const background = spread.background_photo_id
-        ? (async () => {
-            const bytes = await fetchPhotoBytes(spread.background_photo_id as string);
-            return { imageBytes: Array.from(new Uint8Array(bytes)), blur: spread.background_blur, opacity: spread.background_opacity, zoom: spread.background_zoom };
-          })()
-        : Promise.resolve(null);
-      await window.desktopApi.writeAlbumPagePsd(
+      if (!savePath) return;
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session) throw new Error("לא מחובר");
+      setExportPsdProgress(0);
+      stopProgress = window.desktopApi.onAlbumExportProgress((p) => setExportPsdProgress(p.total > 0 ? (p.processed / p.total) * 100 : 0));
+      const res = await window.desktopApi.exportAlbum({
+        format: "psd",
         savePath,
-        widthPx,
-        heightPx,
-        elements.filter((el): el is NonNullable<typeof el> => el !== null),
-        await background
-      );
-      setExportPsdStatus(`נשמר בהצלחה: ${savePath}`);
+        albumTitle: album.title,
+        galleryTitle: gallery.title,
+        // A one-page job: no cover, and this spread's own custom size (if any) is honored by the engine.
+        album: { ...album, cover_photo_id: null },
+        spreads: [spread],
+        fromPage: 1,
+        toPage: 1,
+        baseUrl: WEB_APP_URL,
+        accessToken: session.access_token,
+      });
+      if (!res.ok) throw new Error(res.error);
+      setExportPsdStatus(res.result.cancelled ? "הייצוא בוטל" : `נשמר בהצלחה: ${savePath}`);
     } catch (err) {
       setExportPsdStatus(`שגיאה: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
+      stopProgress?.();
+      setExportPsdProgress(null);
       setExportingPsd(false);
     }
   };
@@ -396,6 +306,9 @@ export default function AlbumPageEditor({
           native app adds over the web version (see PageDetail's removal in AlbumBrowser.tsx for
           why this moved here). Exports the last-SAVED elements — save first if you want to include
           fresh edits. */}
+      {exportPsdProgress !== null && (
+        <ProgressModal label="ייצוא PSD" pct={exportPsdProgress} onCancel={() => void window.desktopApi.cancelAlbumExport()} />
+      )}
       <div style={{ position: "fixed", bottom: 16, insetInlineStart: 16, zIndex: 200, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 6 }}>
         <button
           onClick={exportRealPsd}

@@ -3,7 +3,7 @@ import { supabase } from "./supabase";
 // The deployed web app is this desktop app's only path to photo bytes — see the route's own
 // comment (src/app/api/desktop/photos/[photoId]/route.ts in the web repo) for why: photos live in
 // R2 behind server-only credentials this app can't safely embed.
-const WEB_APP_URL = "https://photographer-flow.vercel.app";
+export const WEB_APP_URL = "https://photographer-flow.vercel.app";
 
 // Previews live in a separate, PUBLIC R2 bucket (see storage.ts's uploadPublicPreview/
 // getPublicPreviewUrl in the web repo) — no signing, no auth, safe to hardcode and hit directly as

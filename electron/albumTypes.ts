@@ -1,12 +1,6 @@
-// Mirrors the relevant slice of src/lib/types.ts in the web app (photographer-flow) — same
-// database, same tables, kept as a hand-copied subset here since this is a separate project with
-// its own build and no shared package between the two.
-
-export type GalleryRow = {
-  id: string;
-  title: string;
-  photographer_id: string;
-};
+// Hand-copied slice of src/types.ts (the renderer's own copy of the web app's types) — electron/
+// compiles as its own separate tsc project, so it can't import from src/. Only what the local album
+// export engine needs: the album row, the spread row, and the page-element union.
 
 export type GalleryAlbumRow = {
   id: string;
@@ -158,37 +152,4 @@ export type GalleryAlbumSpreadRow = {
   background_zoom: number;
   width_cm: number | null;
   height_cm: number | null;
-};
-
-export type GalleryPhotoRow = {
-  id: string;
-  gallery_id: string;
-  photographer_id: string;
-  storage_path: string;
-  preview_storage_path: string | null;
-  original_filename: string;
-  is_favorite: boolean;
-  folder_id: string | null;
-  sort_order: number;
-  created_at: string;
-};
-
-export type GalleryFolderRow = {
-  id: string;
-  gallery_id: string;
-  name: string;
-  sort_order: number;
-};
-
-// A frame is a photo element's shape (position/size) plus a few optional presentation fields —
-// the reusable unit a saved template stores.
-export type AlbumFrame = Pick<AlbumPhotoElement, "id" | "xPct" | "yPct" | "widthPct" | "heightPct"> &
-  Partial<Pick<AlbumPhotoElement, "rotation" | "borderWidth" | "borderColor" | "shadow">>;
-
-export type AlbumTemplateRow = {
-  id: string;
-  photographer_id: string;
-  name: string;
-  frames: AlbumFrame[];
-  created_at: string;
 };

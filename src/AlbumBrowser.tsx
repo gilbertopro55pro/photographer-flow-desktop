@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { supabase } from "./supabase";
-import { previewUrlFor, backfillMissingPreviews } from "./photoApi";
+import { previewUrlFor, backfillMissingPreviews, WEB_APP_URL } from "./photoApi";
 import AlbumPageEditor from "./AlbumPageEditor";
 import SpreadPreview from "./SpreadPreview";
 import { ProgressModal } from "./ProgressModal";
@@ -322,15 +322,12 @@ function AlbumPageGrid({
   );
 }
 
-function sanitizeFilename(name: string): string {
-  return name.replace(/[/\\:*?"<>|]/g, "-").trim() || "אלבום";
-}
-
-// Batch export (a page range, in PSD/PDF/JPG) reuses the web app's own existing export routes —
-// they already have real, tested compositing for all three formats (including full PDF
-// generation via pdf-lib, which isn't ported into this app) — rather than re-implementing that
-// pipeline a third time locally. The routes now also accept a bearer token (see the web repo's
-// src/lib/desktopAuth.ts) alongside their original cookie-session auth, specifically for this.
+// Batch export (a page range, in PSD/PDF/JPG) runs entirely on THIS computer — like a desktop
+// album-design program (TD Albums and the like) — via the local export engine in the main process
+// (electron/albumExport.ts, a port of the web app's own render pipeline). No export server is
+// involved, so there's nothing to be down, out of memory, or out of date; the only network traffic
+// is downloading each page's original photos. The web app keeps its own server-side export
+// untouched.
 function ExportAlbumModal({
   gallery,
   album,
@@ -347,146 +344,75 @@ function ExportAlbumModal({
   const [from, setFrom] = useState(1);
   const [to, setTo] = useState(totalPages);
   const [format, setFormat] = useState<"psd" | "pdf" | "jpg">("psd");
+  const [pdfQuality, setPdfQuality] = useState<"light" | "full">("light");
   const [exporting, setExporting] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
-  const [exportProgress, setExportProgress] = useState<number | null>(null);
-  // PDF is the one format whose job-create route runs on the separate Fly.io worker and can 503
-  // while checkRenderWorkerHealth (web repo's src/lib/renderWorkerHealth.ts) is still waiting for a
-  // fresh deploy to catch up — see the retry loop below. True only during that wait, so the
-  // ProgressModal can read "מכינים את השרת" instead of sitting on 0% with no explanation, and so a
-  // stale/mid-deploy worker produces a graceful wait here instead of an export error — ported from
-  // the identical mechanism in the web app's GalleryManageView.tsx (downloadFromRoute).
-  const [preparingServer, setPreparingServer] = useState(false);
-  const exportAbortControllerRef = useRef<AbortController | null>(null);
+  const [progress, setProgress] = useState<{ processed: number; total: number; pageLabel: string } | null>(null);
+  const [lastResult, setLastResult] = useState<{ folder: string; firstFile: string | null } | null>(null);
 
   const runExport = async () => {
-    setExporting(true);
     setStatus(null);
-    setPreparingServer(false);
-    const controller = new AbortController();
-    exportAbortControllerRef.current = controller;
-    try {
-      const folder = await window.desktopApi.pickFolder();
-      if (!folder) {
-        setExporting(false);
-        return;
-      }
-      // Only after the folder is chosen — showing the full-screen overlay behind the native folder
-      // dialog would just be noise, and a cancelled dialog should leave the screen untouched.
-      setExportProgress(0);
+    setLastResult(null);
+    const folder = await window.desktopApi.pickFolder();
+    if (!folder) return;
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) {
+      setStatus("שגיאה: לא מחובר");
+      return;
+    }
+    setExporting(true);
+    setProgress({ processed: 0, total: 0, pageLabel: "" });
+    const stopProgress = window.desktopApi.onAlbumExportProgress((p) => setProgress(p));
+    // The Supabase session refreshes itself in the background; pushing each fresh access token to the
+    // main process keeps an export longer than one token lifetime downloading originals without a 401.
+    const tokenTimer = setInterval(async () => {
       const {
-        data: { session },
+        data: { session: fresh },
       } = await supabase.auth.getSession();
-      if (!session) throw new Error("לא מחובר");
-
+      if (fresh) window.desktopApi.updateExportToken(fresh.access_token);
+    }, 5 * 60 * 1000);
+    try {
       const clampedFrom = Math.max(1, Math.min(from, to, totalPages));
       const clampedTo = Math.max(clampedFrom, Math.min(Math.max(from, to), totalPages));
-
-      // export-{format} is a background-job route now (see the web repo's own
-      // src/lib/albumExportJobs.ts) — it returns a jobId almost instantly instead of streaming the
-      // finished file directly, so the actual bytes have to come from polling the job's own status
-      // route until it's ready. This app used to treat the POST's own response body as the file —
-      // that's what was actually breaking every export ("not a PDF or corrupted" / FILE_ENDED):
-      // the "file" it was trying to save was really just the small {jobId:"..."} JSON object.
-      //
-      // PDF's create route can 503 when the Fly worker hasn't caught up to a fresh deploy yet —
-      // normally seconds to at most a couple minutes, not a real failure. Retried quietly behind
-      // the ProgressModal (already visible from setExporting(true) above) instead of surfacing an
-      // abrupt error the moment the photographer clicks export.
-      const WORKER_NOT_READY_DEADLINE_MS = 120_000;
-      const WORKER_NOT_READY_POLL_MS = 4_000;
-      const deadline = Date.now() + WORKER_NOT_READY_DEADLINE_MS;
-      let createRes: Response;
-      let createData: { jobId?: string; error?: string } | null;
-      while (true) {
-        createRes = await fetch(`https://photographer-flow.vercel.app/api/galleries/${gallery.id}/album/export-${format}`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${session.access_token}`, "Content-Type": "application/json" },
-          // "web" quality for PDF specifically — per explicit request, this app's PDF export is for
-          // on-screen viewing (email/WhatsApp/quick review), never print, so it should default to
-          // the web app's own smaller/lighter quality-step ladder instead of the "high" default
-          // meant for a print-ready file. Also genuinely fewer/lighter re-render passes to hit its
-          // (smaller) target size, so exports finish faster too.
-          body: JSON.stringify({ from: clampedFrom, to: clampedTo, ...(format === "pdf" ? { quality: "web" } : {}) }),
-          signal: controller.signal,
-        });
-        createData = await createRes.json().catch(() => null);
-        if (createRes.ok && createData?.jobId) break;
-        if (format === "pdf" && createRes.status === 503 && Date.now() < deadline) {
-          setPreparingServer(true);
-          await new Promise<void>((resolve) => {
-            const t = setTimeout(resolve, WORKER_NOT_READY_POLL_MS);
-            controller.signal.addEventListener("abort", () => {
-              clearTimeout(t);
-              resolve();
-            });
-          });
-          if (controller.signal.aborted) throw new DOMException("aborted", "AbortError");
-          continue;
-        }
-        throw new Error(createData?.error ?? `שגיאה בייצוא (${createRes.status})`);
+      const res = await window.desktopApi.exportAlbum({
+        format,
+        folder,
+        albumTitle: album.title,
+        galleryTitle: gallery.title,
+        album,
+        spreads,
+        fromPage: clampedFrom,
+        toPage: clampedTo,
+        pdfQuality,
+        baseUrl: WEB_APP_URL,
+        accessToken: session.access_token,
+      });
+      if (!res.ok) throw new Error(res.error);
+      if (res.result.cancelled) {
+        setStatus("הייצוא בוטל");
+        return;
       }
-      setPreparingServer(false);
-      const jobId: string = createData.jobId;
-
-      let downloadUrl: string | null = null;
-      while (true) {
-        if (controller.signal.aborted) throw new DOMException("aborted", "AbortError");
-        const pollRes = await fetch(`https://photographer-flow.vercel.app/api/galleries/${gallery.id}/album/export-jobs/${jobId}`, {
-          headers: { Authorization: `Bearer ${session.access_token}` },
-          signal: controller.signal,
-        });
-        if (!pollRes.ok) throw new Error(`שגיאה בבדיקת התקדמות הייצוא (${pollRes.status})`);
-        const pollData: { status: string; processedCount: number; totalCount: number; errorMessage: string | null; downloadUrl: string | null } =
-          await pollRes.json();
-        if (pollData.status === "ready") {
-          downloadUrl = pollData.downloadUrl;
-          break;
-        }
-        if (pollData.status === "failed") throw new Error(pollData.errorMessage ?? "שגיאה בייצוא");
-        setExportProgress(pollData.totalCount > 0 ? (pollData.processedCount / pollData.totalCount) * 100 : 0);
-        setStatus(
-          pollData.totalCount > 0 ? `מייצא... ${pollData.processedCount}/${pollData.totalCount} עמודים` : "מייצא..."
-        );
-        await new Promise((resolve) => setTimeout(resolve, 1200));
-      }
-      if (!downloadUrl) throw new Error("שגיאה בייצוא — לא התקבל קישור להורדה");
-      setExportProgress(100);
-
-      const fileRes = await fetch(downloadUrl, { signal: controller.signal });
-      if (!fileRes.ok) throw new Error(`שגיאה בהורדת הקובץ (${fileRes.status})`);
-      const bytes = Array.from(new Uint8Array(await fileRes.arrayBuffer()));
-      const baseName = sanitizeFilename(`${album.title} - ${gallery.title}`);
-
-      if (format === "pdf") {
-        const filePath = await window.desktopApi.saveBytesToFile(folder, `${baseName}.pdf`, bytes);
-        setStatus(`נשמר בהצלחה: ${filePath}`);
-        await window.desktopApi.openPath(filePath);
-      } else {
-        const extracted = await window.desktopApi.saveZipToFolder(folder, bytes);
-        setStatus(`נשמרו ${extracted.length} קבצים בתיקייה שנבחרה`);
-        // PSD specifically tries to launch the actual page in Photoshop (or whatever the OS's
-        // own default .psd handler is) — PDF/JPG just reveal the folder, since there's no single
-        // "main" file to open first the way there is for PSD.
-        const firstPsd = format === "psd" ? extracted.find((p) => p.toLowerCase().endsWith(".psd")) : null;
-        await window.desktopApi.openPath(firstPsd ?? folder);
-      }
+      const files = res.result.files;
+      const firstPsd = format === "psd" ? files.find((p) => p.toLowerCase().endsWith(".psd")) : undefined;
+      setStatus(format === "pdf" ? `נשמר בהצלחה: ${files[0]}` : `נשמרו ${files.length} קבצים בתיקייה: ${res.result.folder}`);
+      setLastResult({ folder: res.result.folder, firstFile: firstPsd ?? (format === "pdf" ? files[0] : null) });
+      // PSD tries to launch the first page in Photoshop (or the OS's default .psd handler) and PDF
+      // opens the file itself; JPG just reveals the folder — there's no single "main" file to open.
+      await window.desktopApi.openPath(firstPsd ?? (format === "pdf" ? files[0] : res.result.folder));
     } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") {
-        setStatus(null);
-      } else {
-        setStatus(`שגיאה: ${err instanceof Error ? err.message : String(err)}`);
-      }
+      setStatus(`שגיאה: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
+      clearInterval(tokenTimer);
+      stopProgress();
       setExporting(false);
-      setExportProgress(null);
-      setPreparingServer(false);
-      exportAbortControllerRef.current = null;
+      setProgress(null);
     }
   };
 
   const cancelExport = () => {
-    exportAbortControllerRef.current?.abort();
+    void window.desktopApi.cancelAlbumExport();
   };
 
   return (
@@ -548,6 +474,35 @@ function ExportAlbumModal({
           ))}
         </div>
 
+        {format === "pdf" && (
+          <>
+            <p style={{ fontSize: 11, color: "var(--color-ink-soft)", margin: "0 0 6px" }}>איכות ה-PDF</p>
+            <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+              {([
+                ["light", "קל — לשליחה וצפייה"],
+                ["full", "איכות מלאה"],
+              ] as const).map(([q, label]) => (
+                <button
+                  key={q}
+                  onClick={() => setPdfQuality(q)}
+                  style={{
+                    flex: 1,
+                    padding: "8px 0",
+                    borderRadius: 8,
+                    border: "none",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    background: pdfQuality === q ? "var(--color-amber-deep)" : "var(--color-line)",
+                    color: pdfQuality === q ? "#fff" : "var(--color-ink)",
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+
         <button
           onClick={runExport}
           disabled={exporting}
@@ -565,13 +520,22 @@ function ExportAlbumModal({
         >
           {exporting ? "מייצא..." : "בחירת תיקייה וייצוא"}
         </button>
+        <p style={{ fontSize: 10, marginTop: 8, color: "var(--color-ink-soft)", lineHeight: 1.5 }}>הייצוא מתבצע על המחשב שלך — אין תלות בשרת ייצוא. האינטרנט נדרש רק להורדת התמונות המקוריות.</p>
         {status && <p style={{ fontSize: 11, marginTop: 10, color: "var(--color-ink-soft)", wordBreak: "break-word" }}>{status}</p>}
+        {lastResult && (
+          <button
+            onClick={() => void window.desktopApi.openPath(lastResult.folder)}
+            style={{ marginTop: 8, width: "100%", padding: "8px 0", borderRadius: 8, border: "1px solid var(--color-line)", background: "#fff", fontSize: 12, fontWeight: 600 }}
+          >
+            פתיחת התיקייה
+          </button>
+        )}
       </div>
-      {exporting && exportProgress !== null && (
+      {exporting && progress !== null && (
         <div onClick={(e) => e.stopPropagation()}>
           <ProgressModal
-            label={preparingServer ? "מכינים את השרת" : `ייצוא ${format.toUpperCase()}`}
-            pct={exportProgress}
+            label={`ייצוא ${format.toUpperCase()}${progress.total > 0 && progress.pageLabel ? ` — ${progress.pageLabel} (${Math.min(progress.processed + 1, progress.total)}/${progress.total})` : ""}`}
+            pct={progress.total > 0 ? (progress.processed / progress.total) * 100 : 0}
             onCancel={cancelExport}
           />
         </div>

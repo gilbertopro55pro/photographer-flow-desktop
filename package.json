@@ -17,16 +17,15 @@
     "@pdf-lib/fontkit": "^1.1.1",
     "@supabase/supabase-js": "^2.45.4",
     "ag-psd": "^31.0.2",
+    "pdf-lib": "^1.17.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "sharp": "^0.33.5",
-    "unzipper": "^0.12.5"
+    "sharp": "^0.33.5"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
-    "@types/unzipper": "^0.10.11",
     "@vitejs/plugin-react": "^4.3.1",
     "electron": "^32.0.1",
     "electron-builder": "^25.0.5",
