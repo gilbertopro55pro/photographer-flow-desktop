@@ -1,7 +1,7 @@
 import sharp from "sharp";
 import { writePsdBuffer, type Layer, type LayerEffectsInfo } from "ag-psd";
 import { infoHandlers } from "ag-psd/dist/additionalInfo.js";
-import { resolvePageElements, coverCropRaw, composePhotoTile, svgTextLayer, shadowLayerPng, ornamentLayerRaw, composeShapeTile, DPI, type PhotoSource } from "./albumRaster.js";
+import { resolvePageElements, coverCropRaw, composePhotoTile, svgTextLayer, ornamentLayerRaw, composeShapeTile, DPI, type PhotoSource } from "./albumRaster.js";
 import { findOrnament } from "./albumOrnaments.js";
 import type { GalleryAlbumRow, GalleryAlbumSpreadRow } from "./albumTypes.js";
 
@@ -46,17 +46,18 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
 const lrFXHandlerIndex = infoHandlers.findIndex((h) => h.key === "lrFX");
 if (lrFXHandlerIndex !== -1) infoHandlers.splice(lrFXHandlerIndex, 1);
 
-// Real, live Photoshop Layer Style effects on the photo's own layer — editable in Photoshop's own
-// Layer Style dialog exactly as if applied by hand. Distance/angle approximate the app's fixed
-// down-right CSS shadow as Photoshop's polar distance+angle form; the blur/opacity numbers mirror
-// boxShadowFor()/the old shadowLayerPng() so it looks the same as the live editor and JPG export.
-// `position: "inside"` for the stroke matches the app's own convention everywhere else (CSS inset
-// box-shadow live, and the SVG-rect-inset-by-half-width technique baked into JPG/PDF export) —
-// the border paints inward from the layer's own edge, never outside it. Every field below (noise,
-// antialiased, contour, layerConceals, choke, showInDialog) is included because real
-// Photoshop-authored files always write the full descriptor; ag-psd's types mark most of them
-// optional, but omitting them was never actually verified against real Photoshop before this.
-function buildPhotoLayerEffects(shadowPct: number | undefined, borderWidth: number | undefined, borderColor: string | undefined): LayerEffectsInfo | undefined {
+// Real, live Photoshop Layer Style effects — shared by photos, ornaments, and (non-outline) shapes
+// — editable in Photoshop's own Layer Style dialog exactly as if applied by hand. Distance/angle
+// approximate the app's fixed down-right CSS shadow as Photoshop's polar distance+angle form; the
+// blur/opacity numbers mirror boxShadowFor()/the old shadowLayerPng() so it looks the same as the
+// live editor and JPG export. `position: "inside"` for the stroke matches the app's own convention
+// everywhere else (CSS inset box-shadow live, and the SVG-rect-inset-by-half-width technique baked
+// into JPG/PDF export) — the border paints inward from the layer's own edge, never outside it.
+// Every field below (noise, antialiased, contour, layerConceals, choke, showInDialog) is included
+// because real Photoshop-authored files always write the full descriptor; ag-psd's types mark most
+// of them optional, but omitting them was never actually verified against real Photoshop before
+// the first attempt at this (photos only) — see that commit for the investigation.
+function buildLayerEffects(shadowPct: number | undefined, borderWidth: number | undefined, borderColor: string | undefined): LayerEffectsInfo | undefined {
   const effects: LayerEffectsInfo = {};
   const linearContour = { name: "Linear", curve: [{ x: 0, y: 0 }, { x: 255, y: 255 }] };
   if (shadowPct) {
@@ -205,25 +206,18 @@ export async function renderAlbumPagePsd({
         if (ornament) ornamentSource = Buffer.from(ornament.svg.replace("<svg ", `<svg style="color:${el.color ?? "#2e3142"}" `));
       }
       if (!ornamentSource) continue;
-      const rendered = await ornamentLayerRaw(ornamentSource, w, h, el.rotation, tintColor, { borderWidth: el.borderWidth, borderColor: el.borderColor });
+      // Border used to be baked as a rectangular trace around the ornament's bounding box (see
+      // ornamentLayerRaw's own comment — it never followed the ornament's real silhouette even
+      // baked). A live Stroke effect follows the actual alpha shape instead, so a non-rectangular
+      // ornament (most of them) gets a correctly-shaped outline now instead of a bounding rectangle.
+      const rendered = await ornamentLayerRaw(ornamentSource, w, h, el.rotation, tintColor);
       if (!rendered) continue;
       any = true;
       const centerX = el.x + w / 2;
       const centerY = el.y + h / 2;
       const top = Math.round(centerY - rendered.height / 2);
       const left = Math.round(centerX - rendered.width / 2);
-      const ornamentShadow = await shadowLayerPng(w, h, el.shadow, Math.round(el.x), Math.round(el.y), el.rotation, undefined, undefined, pageWidthPx, pageHeightPx);
-      if (ornamentShadow) {
-        const shadowRgba = await pngToRawRgba(ornamentShadow.buffer);
-        children.push({
-          name: "צל",
-          top: ornamentShadow.top,
-          left: ornamentShadow.left,
-          bottom: ornamentShadow.top + shadowRgba.height,
-          right: ornamentShadow.left + shadowRgba.width,
-          imageData: { data: shadowRgba.data, width: shadowRgba.width, height: shadowRgba.height },
-        });
-      }
+      const ornamentEffects = buildLayerEffects(el.shadow, el.borderWidth, el.borderColor);
       children.push({
         name: "עיטור",
         top,
@@ -232,6 +226,7 @@ export async function renderAlbumPagePsd({
         right: left + rendered.width,
         opacity: (el.opacity ?? 100) / 100,
         imageData: { data: rendered.data, width: rendered.width, height: rendered.height },
+        ...(ornamentEffects ? { effects: ornamentEffects } : {}),
       });
       continue;
     }
@@ -240,22 +235,22 @@ export async function renderAlbumPagePsd({
       const h = Math.max(1, Math.round(el.height));
       const frameTop = Math.round(el.y);
       const frameLeft = Math.round(el.x);
-      const tile = await composeShapeTile(w, h, el.color, el.maskId, el.rotation, { borderWidth: el.borderWidth, borderColor: el.borderColor, shapeStyle: el.shapeStyle });
+      // rect-outline/circle-outline shapes have no fill of their own — borderWidth/borderColor
+      // ARE the shape's own stroke (see composeShapeTile's own comment), not a decorative extra
+      // to peel off into a live effect, so those stay exactly as baked. Every other shape (filled,
+      // optionally mask-shaped) gets a live Stroke effect instead, same as photos/ornaments — for a
+      // mask-shaped fill (a heart, say) that also means a correctly heart-shaped outline instead of
+      // the old baked rectangle-then-cropped-by-mask border.
+      const isOutlineShape = el.shapeStyle === "rect-outline" || el.shapeStyle === "circle-outline";
+      const tile = await composeShapeTile(w, h, el.color, el.maskId, el.rotation, {
+        borderWidth: isOutlineShape ? el.borderWidth : undefined,
+        borderColor: isOutlineShape ? el.borderColor : undefined,
+        shapeStyle: el.shapeStyle,
+      });
       any = true;
       const top = Math.round(frameTop + tile.top);
       const left = Math.round(frameLeft + tile.left);
-      const shapeShadow = await shadowLayerPng(w, h, el.shadow, frameLeft, frameTop, el.rotation, undefined, undefined, pageWidthPx, pageHeightPx);
-      if (shapeShadow) {
-        const shadowRgba = await pngToRawRgba(shapeShadow.buffer);
-        children.push({
-          name: "צל",
-          top: shapeShadow.top,
-          left: shapeShadow.left,
-          bottom: shapeShadow.top + shadowRgba.height,
-          right: shapeShadow.left + shadowRgba.width,
-          imageData: { data: shadowRgba.data, width: shadowRgba.width, height: shadowRgba.height },
-        });
-      }
+      const shapeEffects = buildLayerEffects(el.shadow, isOutlineShape ? undefined : el.borderWidth, el.borderColor);
       children.push({
         name: "צורה",
         top,
@@ -264,6 +259,7 @@ export async function renderAlbumPagePsd({
         right: left + tile.width,
         opacity: (el.opacity ?? 100) / 100,
         imageData: { data: tile.data, width: tile.width, height: tile.height },
+        ...(shapeEffects ? { effects: shapeEffects } : {}),
       });
       continue;
     }
@@ -276,7 +272,7 @@ export async function renderAlbumPagePsd({
     const frameLeft = Math.round(el.x);
 
     // Border and shadow are real, live Photoshop Layer Style effects on this layer (see
-    // buildPhotoLayerEffects above) — editable in Photoshop's own dialog, not baked into pixels.
+    // buildLayerEffects above) — editable in Photoshop's own dialog, not baked into pixels.
     // Both effects key off the layer's actual alpha silhouette, not its rectangular bounds, so a
     // rotated or mask-shaped photo still gets a correctly-shaped stroke/shadow with no special
     // handling needed here. Opacity stays a live PSD layer property. Blur has no
@@ -293,7 +289,7 @@ export async function renderAlbumPagePsd({
     any = true;
     const top = Math.round(frameTop + tile.top);
     const left = Math.round(frameLeft + tile.left);
-    const effects = buildPhotoLayerEffects(el.shadow, el.borderWidth, el.borderColor);
+    const effects = buildLayerEffects(el.shadow, el.borderWidth, el.borderColor);
     children.push({
       name: "תמונה",
       top,
