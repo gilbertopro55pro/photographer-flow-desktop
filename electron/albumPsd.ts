@@ -1,5 +1,6 @@
 import sharp from "sharp";
-import { writePsdBuffer, type Layer } from "ag-psd";
+import { writePsdBuffer, type Layer, type LayerEffectsInfo } from "ag-psd";
+import { infoHandlers } from "ag-psd/dist/additionalInfo";
 import { resolvePageElements, coverCropRaw, composePhotoTile, svgTextLayer, shadowLayerPng, ornamentLayerRaw, composeShapeTile, DPI, type PhotoSource } from "./albumRaster.js";
 import { findOrnament } from "./albumOrnaments.js";
 import type { GalleryAlbumRow, GalleryAlbumSpreadRow } from "./albumTypes.js";
@@ -23,14 +24,82 @@ async function pngToRawRgba(buffer: Buffer): Promise<{ data: Buffer; width: numb
   return { data, width: info.width, height: info.height };
 }
 
-// Both border and shadow are baked into raster layers here, NOT live Photoshop Layer Style
-// effects (`effects.stroke`/`effects.dropShadow`) — that was tried across several rounds
-// (correct field shapes verified against a real Photoshop-authored fixture, correct 0-1 opacity
-// scale, clean round-trips through ag-psd's own reader) and real Photoshop still reported
-// "problems reading layers" and rendered some pages as blank/black. Without access to real
-// Photoshop to iterate against, that gap can't be closed reliably from outside — this reverts
-// fully to the plain-raster-layers approach that was verified working (real photographer testing,
-// no errors) before that attempt.
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  const clean = hex.replace("#", "");
+  const full = clean.length === 3 ? clean.split("").map((c) => c + c).join("") : clean;
+  const n = parseInt(full, 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+// ag-psd writes TWO separate binary blocks for a layer's effects whenever any are present: the
+// legacy Photoshop-5-era `lrFX` block (a fixed binary layout that CANNOT represent Stroke at all,
+// and omits contour/noise/choke/antialiased) and the modern descriptor-based `lfx2` block (which
+// has everything). It writes both, redundantly, for the same layer. Real Photoshop reported
+// "problems reading layers" on files built this way across three earlier attempts at live layer
+// effects here — the earlier fixes (correct 0-1 opacity scale, field shapes verified against a
+// real Photoshop-authored fixture) only ever verified round-tripping through ag-psd's OWN reader,
+// which happily parses back what its own writer produced either way, so none of that caught the
+// real problem. Removing the legacy `lrFX` handler so only the complete `lfx2` block gets written
+// was verified against real Photoshop 2026 (RG0 web repo, same ag-psd version, same code): opens
+// clean with no warning, Drop Shadow and Stroke both live/editable in the Layer Style dialog, and
+// correctly follow a rotated/mask-shaped photo's actual silhouette rather than its bounding box.
+const lrFXHandlerIndex = infoHandlers.findIndex((h) => h.key === "lrFX");
+if (lrFXHandlerIndex !== -1) infoHandlers.splice(lrFXHandlerIndex, 1);
+
+// Real, live Photoshop Layer Style effects on the photo's own layer — editable in Photoshop's own
+// Layer Style dialog exactly as if applied by hand. Distance/angle approximate the app's fixed
+// down-right CSS shadow as Photoshop's polar distance+angle form; the blur/opacity numbers mirror
+// boxShadowFor()/the old shadowLayerPng() so it looks the same as the live editor and JPG export.
+// `position: "inside"` for the stroke matches the app's own convention everywhere else (CSS inset
+// box-shadow live, and the SVG-rect-inset-by-half-width technique baked into JPG/PDF export) —
+// the border paints inward from the layer's own edge, never outside it. Every field below (noise,
+// antialiased, contour, layerConceals, choke, showInDialog) is included because real
+// Photoshop-authored files always write the full descriptor; ag-psd's types mark most of them
+// optional, but omitting them was never actually verified against real Photoshop before this.
+function buildPhotoLayerEffects(shadowPct: number | undefined, borderWidth: number | undefined, borderColor: string | undefined): LayerEffectsInfo | undefined {
+  const effects: LayerEffectsInfo = {};
+  const linearContour = { name: "Linear", curve: [{ x: 0, y: 0 }, { x: 255, y: 255 }] };
+  if (shadowPct) {
+    const blurPx = Math.max(1, (shadowPct / 100) * 24);
+    const offsetPx = Math.round((shadowPct / 100) * 10);
+    const opacity = 0.15 + (shadowPct / 100) * 0.45;
+    effects.dropShadow = [
+      {
+        enabled: true,
+        present: true,
+        showInDialog: true,
+        useGlobalLight: false,
+        angle: 135,
+        distance: { units: "Pixels", value: Math.round(offsetPx * Math.SQRT2) },
+        choke: { units: "Pixels", value: 0 },
+        size: { units: "Pixels", value: Math.round(blurPx) },
+        color: { r: 0, g: 0, b: 0 },
+        opacity,
+        blendMode: "multiply",
+        antialiased: false,
+        layerConceals: true,
+        contour: linearContour,
+      },
+    ];
+  }
+  if (borderWidth) {
+    effects.stroke = [
+      {
+        enabled: true,
+        present: true,
+        showInDialog: true,
+        position: "inside",
+        fillType: "color",
+        color: hexToRgb(borderColor ?? "#ffffff"),
+        opacity: 1,
+        blendMode: "normal",
+        size: { units: "Pixels", value: borderWidth },
+        overprint: false,
+      },
+    ];
+  }
+  return Object.keys(effects).length > 0 ? effects : undefined;
+}
 
 // Builds a real, layered .psd — each photo is its own positioned raster layer, and a black & white
 // filter becomes an actual clipped Photoshop "Black & White" adjustment layer (not baked into
@@ -206,38 +275,25 @@ export async function renderAlbumPagePsd({
     const frameTop = Math.round(el.y);
     const frameLeft = Math.round(el.x);
 
-    // Border is baked into the photo's own pixels (bundled into the same rotated tile as the
-    // photo when rotated, so it spins together as one rigid unit — see composePhotoTile).
-    // Opacity stays a live PSD layer property. Blur has no from-scratch-authorable Smart Filter
-    // equivalent, so it's baked into the pixels too. Shadow is a separate baked raster layer,
-    // composited just underneath — see the module comment above for why none of these are live
-    // Layer Style effects.
+    // Border and shadow are real, live Photoshop Layer Style effects on this layer (see
+    // buildPhotoLayerEffects above) — editable in Photoshop's own dialog, not baked into pixels.
+    // Both effects key off the layer's actual alpha silhouette, not its rectangular bounds, so a
+    // rotated or mask-shaped photo still gets a correctly-shaped stroke/shadow with no special
+    // handling needed here. Opacity stays a live PSD layer property. Blur has no
+    // from-scratch-authorable Smart Filter equivalent, so it's still baked into the pixels.
     const tile = await composePhotoTile(buffer, width, height, el.focalX, el.focalY, el.filter === "sepia" ? "sepia" : undefined, false, {
       rotation: el.rotation,
       blur: el.blur,
       zoom: el.zoom,
-      borderWidth: el.borderWidth,
-      borderColor: el.borderColor,
       maskId: el.maskId,
       adjustments: el.adjustments,
       sharpness: el.sharpness,
     });
     if (!tile) continue;
     any = true;
-    const shadow = await shadowLayerPng(width, height, el.shadow, frameLeft, frameTop, el.rotation, undefined, undefined, pageWidthPx, pageHeightPx);
-    if (shadow) {
-      const shadowRgba = await pngToRawRgba(shadow.buffer);
-      children.push({
-        name: "צל",
-        top: shadow.top,
-        left: shadow.left,
-        bottom: shadow.top + shadowRgba.height,
-        right: shadow.left + shadowRgba.width,
-        imageData: { data: shadowRgba.data, width: shadowRgba.width, height: shadowRgba.height },
-      });
-    }
     const top = Math.round(frameTop + tile.top);
     const left = Math.round(frameLeft + tile.left);
+    const effects = buildPhotoLayerEffects(el.shadow, el.borderWidth, el.borderColor);
     children.push({
       name: "תמונה",
       top,
@@ -246,6 +302,7 @@ export async function renderAlbumPagePsd({
       right: left + tile.width,
       opacity: (el.opacity ?? 100) / 100,
       imageData: { data: tile.data, width: tile.width, height: tile.height },
+      ...(effects ? { effects } : {}),
     });
     if (el.filter === "bw") {
       children.push({ name: "שחור-לבן", clipping: true, adjustment: { type: "black & white" } });
