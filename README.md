@@ -47,8 +47,8 @@ What's built and working right now:
 - Login using the **same Supabase project** as the web app.
 - Real gallery → album → page browsing, backed by the actual database.
 - The full canvas editor ported from the web app: drag/resize/rotate photos, masks, text, borders,
-  shadow, blur, opacity, multi-select + marquee select, bring-to-front/send-to-back, undo-free
-  direct editing, right-click and Delete-key support.
+  shadow, blur, opacity, multi-select + marquee select, bring-to-front/send-to-back, Cmd/Ctrl+Z
+  undo, right-click and Delete-key support.
 - Ornaments: ~70 built-in procedural decorative graphics (floral/geometric/vintage) plus
   photographer-uploaded custom ornament tabs (drag-and-drop or native file picker), stored in the
   cloud (Supabase + R2) so they're available across every album. Custom (uploaded) ornaments can
@@ -60,10 +60,12 @@ What's built and working right now:
 - Real photo compositing into export: cover-fit crop + focal point, masks, borders, shadow, blur,
   rotation, zoom, text (real glyph rendering via fontkit) — for a single page (local PSD) or a full
   page range (PSD/PDF/JPG, via the web app's own export routes, saved straight to a folder the
-  user picks and opened automatically afterward). The batch page-range export goes through the web
-  app's own routes, which don't know about ornaments/shapes (desktop-only element types) yet, so
-  those two only bake into the local single-page PSD export for now — same known gap as ornaments
-  already had.
+  user picks and opened automatically afterward). Ornaments and shapes are NOT desktop-only —
+  they're part of the web app's own `AlbumElement` union too, and its server-side export routes
+  (`albumRaster.ts`/`albumPsd.ts`/`albumPdf.ts`) already handle both `"ornament"` and `"shape"`
+  element kinds at the code level, so the batch page-range export likely already bakes them in
+  correctly. That hasn't been re-verified with an actual live export since this was last checked,
+  so treat it as probably-fixed rather than confirmed until someone runs one.
 - Shadow and border are baked into raster layers on export (not live Photoshop Layer Style
   effects). Live effects were tried three times total — twice on the web app's own PSD export,
   once here on desktop — and every time real Photoshop rejected the file ("problems reading

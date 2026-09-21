@@ -1260,6 +1260,16 @@ export function combinedBoxShadowFor(
   return [drop, border].filter(Boolean).join(", ") || undefined;
 }
 
+// Anchored flyout panels (masks/ornaments/shapes) open below their trigger button, which can sit
+// anywhere down a tall, independently-scrollable sidebar — a fixed `max-h-[65vh]` from the panel's
+// OWN top clips its bottom items whenever the trigger itself is already low on screen (65vh past a
+// low top easily exceeds the viewport). This computes the max height from actual remaining space
+// below the anchor instead, so the panel's own scrollbar — not the viewport edge — is what limits
+// how much of it you can reach.
+function panelMaxHeight(anchorTopPx: number): number {
+  return Math.max(160, window.innerHeight - anchorTopPx - 20);
+}
+
 type ResizeHandle = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
 // Resizes a frame from any of its 8 handles, anchored at the OPPOSITE edge/corner (dragging the
@@ -1762,6 +1772,10 @@ export default function AlbumSpreadCanvasEditor({
   // Separate toggle for the drag-to-frame favorites panel below the save button — independent of
   // the "+ תמונה" picker modal's own "show all" toggle above.
   const [showAllDragPanel, setShowAllDragPanel] = useState(false);
+  // Folder-tab filter for the drag panel below — "__all__" (the default) keeps the
+  // always-shown-grouped-by-folder view; picking a real folder id narrows the panel to just that
+  // folder. Ported from the web app's editor.
+  const [dragPanelTab, setDragPanelTab] = useState<string>("__all__");
   // Ported from the web app's editor — lets the drag panel be ordered by filename or upload date
   // instead of only the gallery's own sort_order.
   const [dragPanelSort, setDragPanelSort] = useState<"default" | "name" | "date">("default");
@@ -1788,8 +1802,22 @@ export default function AlbumSpreadCanvasEditor({
   // is actively snapped to it, same visual-confirmation pattern as an element-to-element snap.
   const [marginSnap, setMarginSnap] = useState<{ x: boolean; y: boolean }>({ x: false, y: false });
   const [textDraftOpen, setTextDraftOpen] = useState(false);
+  const [textDraftClosing, setTextDraftClosing] = useState(false);
   const [textDraft, setTextDraft] = useState("");
+  // Design choices made up front in the text-creation panel (anchored below the טקסט button, same
+  // as masks/ornaments/shapes) instead of only being editable after the fact via the sidebar —
+  // defaults match what addText used to hardcode. Ported from the web app's editor.
+  const [textDraftFontSize, setTextDraftFontSize] = useState(40);
+  const [textDraftFontFamily, setTextDraftFontFamily] = useState("heebo");
+  const [textDraftColor, setTextDraftColor] = useState("white");
+  const [textPanelRect, setTextPanelRect] = useState<{ top: number; left: number; width: number; maxHeight: number } | null>(null);
+  const textButtonRef = useRef<HTMLButtonElement>(null);
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
+  const [templatePickerClosing, setTemplatePickerClosing] = useState(false);
+  // Anchors the templates dropdown directly below the תבניות button, same pattern as the
+  // masks/ornaments/shapes pickers above — replaces the old full-screen dimmed modal.
+  const [templatePanelRect, setTemplatePanelRect] = useState<{ top: number; left: number; width: number; maxHeight: number } | null>(null);
+  const templateButtonRef = useRef<HTMLButtonElement>(null);
   // Background opacity/blur/zoom flyout — opened from a small button at the canvas's own
   // bottom-left corner (see its render site) instead of an always-visible sidebar section, so
   // those controls stay reachable without permanently taking up sidebar space.
@@ -1802,12 +1830,12 @@ export default function AlbumSpreadCanvasEditor({
   // computed from the real DOM rect (not CSS alone) and rendered `position: fixed` so it can't get
   // clipped by the side panel's own `overflow-y-auto`, and stays correctly placed regardless of
   // where in that scrollable panel the button currently sits.
-  const [masksPanelRect, setMasksPanelRect] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [masksPanelRect, setMasksPanelRect] = useState<{ top: number; left: number; width: number; maxHeight: number } | null>(null);
   const masksButtonRef = useRef<HTMLButtonElement>(null);
   // Ornaments dropdown — same anchored-below-the-button pattern as the masks picker above.
   const [ornamentsPickerOpen, setOrnamentsPickerOpen] = useState(false);
   const [ornamentsPickerClosing, setOrnamentsPickerClosing] = useState(false);
-  const [ornamentsPanelRect, setOrnamentsPanelRect] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [ornamentsPanelRect, setOrnamentsPanelRect] = useState<{ top: number; left: number; width: number; maxHeight: number } | null>(null);
   const ornamentsButtonRef = useRef<HTMLButtonElement>(null);
   // "floral"/"geometric"/"vintage" for a built-in tab, or a custom tab's own id.
   const [ornamentTab, setOrnamentTab] = useState<string>("floral");
@@ -1819,7 +1847,7 @@ export default function AlbumSpreadCanvasEditor({
   // Shapes dropdown — same anchored-below-the-button pattern as masks/ornaments above.
   const [shapesPickerOpen, setShapesPickerOpen] = useState(false);
   const [shapesPickerClosing, setShapesPickerClosing] = useState(false);
-  const [shapesPanelRect, setShapesPanelRect] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [shapesPanelRect, setShapesPanelRect] = useState<{ top: number; left: number; width: number; maxHeight: number } | null>(null);
   const shapesButtonRef = useRef<HTMLButtonElement>(null);
   const [templateTab, setTemplateTab] = useState<TemplateTabKey>("2");
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
@@ -2034,6 +2062,10 @@ export default function AlbumSpreadCanvasEditor({
       : dragPanelPool.length > 0
       ? [{ id: "__all__", name: null, items: dragPanelPool }]
       : [];
+  // Falls back to "הכל" if the previously-selected tab's group disappeared (its last available
+  // favorite got placed/removed) rather than silently showing an empty panel.
+  const dragPanelEffectiveTab = dragPanelTab === "__all__" || dragPanelGroups.some((g) => g.id === dragPanelTab) ? dragPanelTab : "__all__";
+  const dragPanelVisibleGroups = dragPanelEffectiveTab === "__all__" ? dragPanelGroups : dragPanelGroups.filter((g) => g.id === dragPanelEffectiveTab);
   const backgroundPhoto = backgroundPhotoId ? photos.find((p) => p.id === backgroundPhotoId) : null;
   // A 0.5cm trim-safe inset expressed as a % of each axis — proportional, so it looks right on a
   // 20x30 album and a 60x40 one alike.
@@ -2164,7 +2196,7 @@ export default function AlbumSpreadCanvasEditor({
       }
       if (!meta && !e.altKey && e.key.toLowerCase() === "t") {
         e.preventDefault();
-        setTextDraftOpen(true);
+        textButtonRef.current?.click();
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -2178,6 +2210,22 @@ export default function AlbumSpreadCanvasEditor({
     const id = `frame-${Date.now()}`;
     setElements((prev) => [...prev, { id, type: "photo", photoId: null, xPct: 32, yPct: 32, widthPct: 36, heightPct: 36, focalX: 50, focalY: 50 }]);
     setSelectedIds(new Set([id]));
+  };
+
+  const closeTextPanel = () => {
+    setTextDraftClosing(true);
+    setTimeout(() => {
+      setTextDraftOpen(false);
+      setTextDraftClosing(false);
+    }, 200);
+  };
+
+  const closeTemplatePanel = () => {
+    setTemplatePickerClosing(true);
+    setTimeout(() => {
+      setTemplatePickerOpen(false);
+      setTemplatePickerClosing(false);
+    }, 200);
   };
 
   // Plays the slide-up close animation before actually unmounting the masks panel — mirrors the
@@ -2525,9 +2573,8 @@ export default function AlbumSpreadCanvasEditor({
     // a paint-order bug, every new box was simply created at the identical position. Successive
     // additions now cascade, and height tracks the actual font size (see textHeightPctForFontSize)
     // instead of a flat 15% that was wildly oversized for a short word.
-    const fontSize = 40;
     const widthPct = 60;
-    const heightPct = textHeightPctForFontSize(fontSize, album);
+    const heightPct = textHeightPctForFontSize(textDraftFontSize, album);
     const existingTextCount = elements.filter((e) => e.type === "text").length;
     const cascade = (existingTextCount % 8) * 4;
     setElements((prev) => [
@@ -2540,14 +2587,14 @@ export default function AlbumSpreadCanvasEditor({
         yPct: Math.min(100 - heightPct, 40 + cascade),
         widthPct,
         heightPct,
-        fontSize,
-        fontFamily: "heebo",
-        color: "white",
+        fontSize: textDraftFontSize,
+        fontFamily: textDraftFontFamily,
+        color: textDraftColor,
         align: "center",
       },
     ]);
     setTextDraft("");
-    setTextDraftOpen(false);
+    closeTextPanel();
     setSelectedIds(new Set([id]));
   };
 
@@ -3709,7 +3756,7 @@ export default function AlbumSpreadCanvasEditor({
                 onBringToFront={() => bringToFront(lastSideSelection.el.id)}
                 onSendToBack={() => sendToBack(lastSideSelection.el.id)}
                 onOpenMasksPicker={(rect) => {
-                  setMasksPanelRect(rect);
+                  setMasksPanelRect({ ...rect, maxHeight: panelMaxHeight(rect.top + 4) });
                   setMasksPickerOpen(true);
                 }}
               />
@@ -3895,13 +3942,35 @@ export default function AlbumSpreadCanvasEditor({
               <button onClick={addFrame} className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink">
                 + מסגרת
               </button>
-              <button onClick={() => setTemplatePickerOpen(true)} className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink flex items-center justify-center gap-1.5">
+              <button
+                ref={templateButtonRef}
+                onClick={() => {
+                  const r = templateButtonRef.current?.getBoundingClientRect();
+                  if (r) {
+                    const w = Math.max(r.width, 320);
+                    setTemplatePanelRect({ top: r.bottom, left: r.right - w, width: w, maxHeight: panelMaxHeight(r.bottom + 4) });
+                  }
+                  setTemplatePickerOpen(true);
+                }}
+                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink flex items-center justify-center gap-1.5"
+              >
                 <IconGrid size={14} />
                 תבניות
               </button>
             </>
           )}
-          <button onClick={() => setTextDraftOpen(true)} className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink">
+          <button
+            ref={textButtonRef}
+            onClick={() => {
+              const r = textButtonRef.current?.getBoundingClientRect();
+              if (r) {
+                const w = Math.max(r.width, 320);
+                setTextPanelRect({ top: r.bottom, left: r.right - w, width: w, maxHeight: panelMaxHeight(r.bottom + 4) });
+              }
+              setTextDraftOpen(true);
+            }}
+            className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink"
+          >
             + טקסט
           </button>
         </div>
@@ -3910,7 +3979,7 @@ export default function AlbumSpreadCanvasEditor({
             ref={masksButtonRef}
             onClick={() => {
               const r = masksButtonRef.current?.getBoundingClientRect();
-              if (r) setMasksPanelRect({ top: r.bottom, left: r.left, width: r.width });
+              if (r) setMasksPanelRect({ top: r.bottom, left: r.left, width: r.width, maxHeight: panelMaxHeight(r.bottom + 4) });
               setMasksPickerOpen(true);
             }}
             className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink mt-2 flex items-center justify-center gap-1.5"
@@ -3924,7 +3993,7 @@ export default function AlbumSpreadCanvasEditor({
             ref={ornamentsButtonRef}
             onClick={() => {
               const r = ornamentsButtonRef.current?.getBoundingClientRect();
-              if (r) setOrnamentsPanelRect({ top: r.bottom, left: r.left, width: r.width });
+              if (r) setOrnamentsPanelRect({ top: r.bottom, left: r.left, width: r.width, maxHeight: panelMaxHeight(r.bottom + 4) });
               setOrnamentsPickerOpen(true);
             }}
             className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink mt-2 flex items-center justify-center gap-1.5"
@@ -3938,7 +4007,7 @@ export default function AlbumSpreadCanvasEditor({
             ref={shapesButtonRef}
             onClick={() => {
               const r = shapesButtonRef.current?.getBoundingClientRect();
-              if (r) setShapesPanelRect({ top: r.bottom, left: r.left, width: r.width });
+              if (r) setShapesPanelRect({ top: r.bottom, left: r.left, width: r.width, maxHeight: panelMaxHeight(r.bottom + 4) });
               setShapesPickerOpen(true);
             }}
             className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink mt-2 flex items-center justify-center gap-1.5"
@@ -4038,13 +4107,35 @@ export default function AlbumSpreadCanvasEditor({
                 לחיצה בוחרת כמה תמונות יחד — גוררים כל אחת מהן כדי לשבץ את כולן בעמוד, לפי הכיוון של כל תמונה
               </p>
             )}
+            {/* Folder tabs — same pattern as ORNAMENT_TABS/TEMPLATE_TABS above. "הכל" (the default)
+                keeps the original always-shown-grouped-by-folder view; picking one of the real
+                folder tabs narrows the panel down to just that folder. Only shown once there's an
+                actual choice to make (2+ real folders) — a single-folder gallery has nothing to
+                switch between. */}
+            {dragPanelGroups.length > 1 && (
+              <div className="flex gap-1.5 overflow-x-auto pb-1 mb-1.5">
+                {[{ id: "__all__", name: "הכל" }, ...dragPanelGroups].map((tab) => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setDragPanelTab(tab.id)}
+                    className="shrink-0 rounded-full font-semibold whitespace-nowrap px-2.5 py-1 text-[10px]"
+                    style={{
+                      background: dragPanelTab === tab.id ? "var(--color-amber-deep)" : "var(--color-chip)",
+                      color: dragPanelTab === tab.id ? "#fff" : "var(--color-ink-soft)",
+                    }}
+                  >
+                    {tab.name ?? "ללא לשונית"}
+                  </button>
+                ))}
+              </div>
+            )}
             {dragPanelGroups.length === 0 ? (
               <p className="text-[11px] text-ink-soft text-center py-3">
                 {favoritePhotos.length === 0 ? "אין תמונות מועדפות בגלריה הזו עדיין." : "כל התמונות המועדפות כבר שובצו בעמוד."}
               </p>
             ) : (
               <div className="space-y-2.5 max-h-56 overflow-y-auto pr-0.5" onMouseLeave={() => { hoverPreviewTokenRef.current++; setDragPanelHoverPreview(null); }}>
-                {dragPanelGroups.map((group) => (
+                {dragPanelVisibleGroups.map((group) => (
                   <div key={group.id}>
                     {group.name && <p className="text-[10px] font-semibold text-ink-soft mb-1">{group.name}</p>}
                     <div className="grid grid-cols-5 gap-1.5">
@@ -4228,12 +4319,25 @@ export default function AlbumSpreadCanvasEditor({
         </div>
       )}
 
-      {textDraftOpen && (
-        <div className="fixed inset-0 z-[85] flex items-end justify-center" style={{ background: "rgba(46,49,66,0.6)" }} onClick={() => setTextDraftOpen(false)}>
-          <div className="w-full max-w-sm rounded-t-3xl p-5 bg-paper" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-2.5">
-              <p className="text-sm font-semibold">טקסט חדש (עברית או אנגלית)</p>
-              <button onClick={() => setTextDraftOpen(false)} className="h-8 w-8 rounded-full flex items-center justify-center bg-white border border-line shrink-0">
+      {(textDraftOpen || textDraftClosing) && textPanelRect && (
+        <>
+          <style>{`
+            @keyframes maskPanelSlideDown { from { transform: translateY(-8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+            @keyframes maskPanelSlideUp { from { transform: translateY(0); opacity: 1; } to { transform: translateY(-8px); opacity: 0; } }
+            .mask-panel-opening { animation: maskPanelSlideDown 160ms ease forwards; }
+            .mask-panel-closing { animation: maskPanelSlideUp 160ms ease forwards; }
+          `}</style>
+          <div className="fixed inset-0 z-[84]" onClick={closeTextPanel} />
+          <div
+            className={`fixed z-[85] rounded-xl bg-paper shadow-sheet overflow-y-auto overscroll-contain p-4 ${
+              textDraftClosing ? "mask-panel-closing" : "mask-panel-opening"
+            }`}
+            style={{ top: textPanelRect.top + 4, left: textPanelRect.left, width: textPanelRect.width, maxHeight: textPanelRect.maxHeight }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-3">
+              <p className="font-bold text-sm">טקסט חדש (עברית או אנגלית)</p>
+              <button onClick={closeTextPanel} className="h-8 w-8 rounded-full flex items-center justify-center bg-white border border-line shrink-0">
                 <IconClose />
               </button>
             </div>
@@ -4241,21 +4345,72 @@ export default function AlbumSpreadCanvasEditor({
               value={textDraft}
               onChange={(e) => setTextDraft(e.target.value)}
               autoFocus
-              className="w-full rounded-lg px-3 py-2.5 text-sm border border-line bg-white mb-3"
+              className="w-full rounded-lg border border-line bg-white mb-3 px-3 py-2.5 text-sm"
             />
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              {TEXT_COLOR_PALETTE.map(({ value, label }) => (
+                <button
+                  key={value}
+                  onClick={() => setTextDraftColor(value)}
+                  title={label}
+                  className="rounded-full h-7 w-7"
+                  style={{
+                    background: value,
+                    boxShadow: textDraftColor === value ? "0 0 0 2px var(--color-paper), 0 0 0 4px var(--color-amber-deep)" : "0 0 0 1px var(--color-line)",
+                  }}
+                />
+              ))}
+            </div>
+            <select
+              value={textDraftFontFamily}
+              onChange={(e) => setTextDraftFontFamily(e.target.value)}
+              className="w-full rounded-lg font-semibold bg-white border border-line mb-3 px-2.5 py-2 text-xs"
+              style={{ fontFamily: albumFontFamilyCss(textDraftFontFamily) }}
+            >
+              <optgroup label="פונטים בעברית">
+                {ALBUM_FONTS.filter((f) => f.category === "hebrew").map((f) => (
+                  <option key={f.key} value={f.key} style={{ fontFamily: albumFontFamilyCss(f.key) }}>
+                    {f.label}
+                  </option>
+                ))}
+              </optgroup>
+              <optgroup label="פונטים באנגלית">
+                {ALBUM_FONTS.filter((f) => f.category === "latin").map((f) => (
+                  <option key={f.key} value={f.key} style={{ fontFamily: albumFontFamilyCss(f.key) }}>
+                    {f.label}
+                  </option>
+                ))}
+              </optgroup>
+            </select>
+            <div className="mb-3">
+              <SliderControl label="גודל טקסט" value={textDraftFontSize} min={8} max={250} unit="pt" onChange={setTextDraftFontSize} />
+            </div>
             <button onClick={addText} disabled={!textDraft.trim()} className="w-full rounded-lg py-3 text-sm font-semibold bg-amber-deep text-white disabled:opacity-60">
               הוספה
             </button>
           </div>
-        </div>
+        </>
       )}
 
-      {templatePickerOpen && (
-        <div className="fixed inset-0 z-[85] flex items-end lg:items-center justify-center" style={{ background: "rgba(46,49,66,0.6)" }} onClick={() => setTemplatePickerOpen(false)}>
-          <div className="w-full max-w-sm lg:max-w-4xl rounded-t-3xl lg:rounded-3xl p-5 lg:p-6 bg-paper max-h-[75vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+      {(templatePickerOpen || templatePickerClosing) && templatePanelRect && (
+        <>
+          <style>{`
+            @keyframes maskPanelSlideDown { from { transform: translateY(-8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+            @keyframes maskPanelSlideUp { from { transform: translateY(0); opacity: 1; } to { transform: translateY(-8px); opacity: 0; } }
+            .mask-panel-opening { animation: maskPanelSlideDown 160ms ease forwards; }
+            .mask-panel-closing { animation: maskPanelSlideUp 160ms ease forwards; }
+          `}</style>
+          <div className="fixed inset-0 z-[84]" onClick={closeTemplatePanel} />
+          <div
+            className={`fixed z-[85] rounded-xl p-4 bg-paper shadow-sheet overflow-y-auto ${
+              templatePickerClosing ? "mask-panel-closing" : "mask-panel-opening"
+            }`}
+            style={{ top: templatePanelRect.top + 4, left: templatePanelRect.left, width: templatePanelRect.width, maxHeight: templatePanelRect.maxHeight }}
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between mb-3">
               <p className="text-sm font-bold">תבניות מובנות</p>
-              <button onClick={() => setTemplatePickerOpen(false)} className="h-8 w-8 rounded-full flex items-center justify-center bg-white border border-line shrink-0">
+              <button onClick={closeTemplatePanel} className="h-8 w-8 rounded-full flex items-center justify-center bg-white border border-line shrink-0">
                 <IconClose />
               </button>
             </div>
@@ -4304,7 +4459,7 @@ export default function AlbumSpreadCanvasEditor({
               </>
             )}
           </div>
-        </div>
+        </>
       )}
 
       {backgroundPanelOpen && backgroundPanelRect && backgroundPhoto?.url && (
@@ -4349,10 +4504,10 @@ export default function AlbumSpreadCanvasEditor({
               overlay, so this stays invisible rather than dimming the canvas. */}
           <div className="fixed inset-0 z-[84]" onClick={closeMasksPicker} />
           <div
-            className={`fixed z-[85] rounded-xl p-4 bg-paper shadow-sheet max-h-[65vh] overflow-y-auto ${
+            className={`fixed z-[85] rounded-xl p-4 bg-paper shadow-sheet overflow-y-auto ${
               masksPickerClosing ? "mask-panel-closing" : "mask-panel-opening"
             }`}
-            style={{ top: masksPanelRect.top + 4, left: masksPanelRect.left, width: masksPanelRect.width }}
+            style={{ top: masksPanelRect.top + 4, left: masksPanelRect.left, width: masksPanelRect.width, maxHeight: masksPanelRect.maxHeight }}
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-3">
@@ -4416,10 +4571,10 @@ export default function AlbumSpreadCanvasEditor({
           `}</style>
           <div className="fixed inset-0 z-[84]" onClick={closeOrnamentsPicker} />
           <div
-            className={`fixed z-[85] rounded-xl p-4 bg-paper shadow-sheet max-h-[65vh] overflow-y-auto ${
+            className={`fixed z-[85] rounded-xl p-4 bg-paper shadow-sheet overflow-y-auto ${
               ornamentsPickerClosing ? "ornament-panel-closing" : "ornament-panel-opening"
             }`}
-            style={{ top: ornamentsPanelRect.top + 4, left: ornamentsPanelRect.left, width: ornamentsPanelRect.width }}
+            style={{ top: ornamentsPanelRect.top + 4, left: ornamentsPanelRect.left, width: ornamentsPanelRect.width, maxHeight: ornamentsPanelRect.maxHeight }}
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-3">
@@ -4584,10 +4739,10 @@ export default function AlbumSpreadCanvasEditor({
           `}</style>
           <div className="fixed inset-0 z-[84]" onClick={closeShapesPicker} />
           <div
-            className={`fixed z-[85] rounded-xl p-4 bg-paper shadow-sheet max-h-[65vh] overflow-y-auto ${
+            className={`fixed z-[85] rounded-xl p-4 bg-paper shadow-sheet overflow-y-auto ${
               shapesPickerClosing ? "shape-panel-closing" : "shape-panel-opening"
             }`}
-            style={{ top: shapesPanelRect.top + 4, left: shapesPanelRect.left, width: shapesPanelRect.width }}
+            style={{ top: shapesPanelRect.top + 4, left: shapesPanelRect.left, width: shapesPanelRect.width, maxHeight: shapesPanelRect.maxHeight }}
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-3">

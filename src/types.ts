@@ -86,8 +86,10 @@ export type AlbumTextElement = {
 
 // A standalone decorative overlay graphic (see src/lib/albumOrnaments.ts) — distinct from a
 // mask (which clips a photo's own pixels): an ornament is its own positioned/resizable element,
-// recolorable via `color`, not tied to any specific photo. Desktop-only addition, not part of the
-// web app's own AlbumElement union.
+// recolorable via `color`, not tied to any specific photo. Also part of the web app's own
+// AlbumElement union (src/lib/types.ts) and handled by its server-side export routes — this type
+// is a hand-duplicated copy, not a desktop-only addition (see albumOrnaments.ts's own top comment
+// for why this app needs its own copy at all).
 export type AlbumOrnamentElement = {
   id: string;
   type: "ornament";
