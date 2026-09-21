@@ -146,10 +146,19 @@ ipcMain.on("desktop:open-native-album-editor", (_event, galleryId: string) => {
 });
 
 // The native album editor's own "back to the system" button — re-shows the website view (already
-// loaded and signed in, so this is instant, not a fresh navigation).
-ipcMain.on("desktop:show-website", () => {
+// loaded and signed in, so this is instant, not a fresh navigation). An optional path (e.g. from
+// AlbumBrowser's "צור אלבום" button, for a gallery that has no album yet — there's nothing for the
+// native editor itself to show) additionally navigates the already-signed-in view straight there,
+// a plain in-session loadURL rather than the /desktop-handoff dance (that's only needed once, to
+// hand off the session itself — the site's own client stays signed in across normal navigations
+// within the same BrowserView after that).
+ipcMain.on("desktop:show-website", (_event, path?: string) => {
   const win = mainWindow;
   if (!win) return;
+  if (path) {
+    const view = ensureWebsiteView(win);
+    view.webContents.loadURL(`${WEBSITE_ORIGIN}${path}`);
+  }
   showWebsiteView(win);
 });
 

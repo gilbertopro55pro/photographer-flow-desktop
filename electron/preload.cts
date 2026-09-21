@@ -16,8 +16,8 @@ contextBridge.exposeInMainWorld("desktopApi", {
   syncSession: (session: { access_token: string; refresh_token: string } | null): void => {
     ipcRenderer.send("desktop:session-updated", session);
   },
-  showWebsite: (): void => {
-    ipcRenderer.send("desktop:show-website");
+  showWebsite: (path?: string): void => {
+    ipcRenderer.send("desktop:show-website", path);
   },
   onOpenGalleryAlbum: (callback: (galleryId: string) => void): (() => void) => {
     const listener = (_event: unknown, galleryId: string) => callback(galleryId);

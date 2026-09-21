@@ -25,7 +25,7 @@ declare global {
   interface Window {
     desktopApi: {
       syncSession: (session: { access_token: string; refresh_token: string } | null) => void;
-      showWebsite: () => void;
+      showWebsite: (path?: string) => void;
       onOpenGalleryAlbum: (callback: (galleryId: string) => void) => () => void;
       pickFolder: () => Promise<string | null>;
       pickSavePath: (suggestedName: string) => Promise<string | null>;

@@ -256,7 +256,19 @@ function AlbumPageGrid({
         {loading ? (
           <p style={{ fontSize: 13, color: "var(--color-ink-soft)" }}>טוען...</p>
         ) : !album ? (
-          <p style={{ fontSize: 13, color: "var(--color-ink-soft)" }}>אין עדיין אלבום לגלריה הזו.</p>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 10 }}>
+            <p style={{ fontSize: 13, color: "var(--color-ink-soft)", margin: 0 }}>אין עדיין אלבום לגלריה הזו.</p>
+            {/* Album creation (size presets, blank/template wizard) stays website-only — it's a
+                plain form with no filesystem dependency, so it doesn't earn a native rebuild the
+                way the canvas editor's real Save/PSD-write access does. This just gets the
+                photographer to the right screen already signed in, instead of a dead end. */}
+            <button
+              onClick={() => window.desktopApi.showWebsite(`/galleries/${gallery.id}`)}
+              style={{ fontSize: 12, fontWeight: 600, padding: "8px 16px", borderRadius: 8, border: "none", background: "var(--color-amber-deep)", color: "#fff" }}
+            >
+              צור אלבום
+            </button>
+          </div>
         ) : spreads.length === 0 ? (
           <p style={{ fontSize: 13, color: "var(--color-ink-soft)" }}>אין עדיין עמודים באלבום.</p>
         ) : (
