@@ -122,6 +122,7 @@ export default function AlbumBrowser({ initialGalleryId }: { initialGalleryId?: 
         gallery={view.gallery}
         album={album}
         spreads={spreads}
+        onSpreadsChange={setSpreads}
         previewUrls={previewUrls}
         loading={albumLoading}
         onBack={() => setView({ screen: "galleries" })}
@@ -239,10 +240,19 @@ function GalleryList({ onPick }: { onPick: (gallery: GalleryRow) => void }) {
   );
 }
 
+function IconAlbumClose({ size = 14 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 5l14 14M19 5L5 19" />
+    </svg>
+  );
+}
+
 function AlbumPageGrid({
   gallery,
   album,
   spreads,
+  onSpreadsChange,
   previewUrls,
   loading,
   onBack,
@@ -251,12 +261,32 @@ function AlbumPageGrid({
   gallery: GalleryRow;
   album: GalleryAlbumRow | null;
   spreads: GalleryAlbumSpreadRow[];
+  onSpreadsChange: (next: GalleryAlbumSpreadRow[]) => void;
   previewUrls: Map<string, string>;
   loading: boolean;
   onBack: () => void;
   onPick: (album: GalleryAlbumRow, spread: GalleryAlbumSpreadRow) => void;
 }) {
   const [exportModalOpen, setExportModalOpen] = useState(false);
+  // Drag-and-drop reorder — ported from the web app's own reorderSpreads: dropping the dragged
+  // spread onto targetIndex moves it there, and the whole array's sort_order is recomputed rather
+  // than diffing which pairs actually moved (simplest correct approach for a short list).
+  const [draggedSpreadId, setDraggedSpreadId] = useState<string | null>(null);
+  const reorderSpreads = async (targetIndex: number) => {
+    if (!draggedSpreadId) return;
+    const fromIndex = spreads.findIndex((s) => s.id === draggedSpreadId);
+    if (fromIndex === -1 || fromIndex === targetIndex) return;
+    const next = [...spreads];
+    const [moved] = next.splice(fromIndex, 1);
+    next.splice(targetIndex, 0, moved);
+    onSpreadsChange(next);
+    setDraggedSpreadId(null);
+    await Promise.all(next.map((s, i) => supabase.from("gallery_album_spreads").update({ sort_order: i }).eq("id", s.id)));
+  };
+  const removeSpread = async (spreadId: string) => {
+    await supabase.from("gallery_album_spreads").delete().eq("id", spreadId);
+    onSpreadsChange(spreads.filter((s) => s.id !== spreadId));
+  };
 
   return (
     <div>
@@ -294,56 +324,94 @@ function AlbumPageGrid({
         ) : spreads.length === 0 ? (
           <p style={{ fontSize: 13, color: "var(--color-ink-soft)" }}>אין עדיין עמודים באלבום.</p>
         ) : (
-          // auto-fill + minmax(0, ...) instead of a flat repeat(4, 1fr) — a plain 1fr column still
-          // carries an implicit min-width:auto, which let a card's own content (or the whole row)
-          // outgrow the white card around it and force the page into horizontal scroll. minmax(0,
-          // 1fr) removes that floor entirely so columns always shrink to actually fit; auto-fill
-          // (not a fixed "4") lets more, appropriately-sized cards per row fill a wide window
-          // instead of forcing exactly four oversized ones.
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(110px, 1fr))", gap: 10, width: "100%", boxSizing: "border-box" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6, width: "100%", boxSizing: "border-box" }}>
             {spreads.map((s, i) => {
               return (
-                <button
+                <div
                   key={s.id}
-                  onClick={() => onPick(album, s)}
-                  title={`עמוד ${i + 1}`}
+                  draggable
+                  onDragStart={() => setDraggedSpreadId(s.id)}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    reorderSpreads(i);
+                  }}
                   style={{
                     position: "relative",
-                    aspectRatio: `${s.width_cm ?? album.width_cm} / ${s.height_cm ?? album.height_cm}`,
-                    minWidth: 0,
-                    borderRadius: 8,
+                    borderRadius: 12,
                     border: "1px solid var(--color-line)",
-                    background: "#fff",
                     overflow: "hidden",
-                    cursor: "pointer",
+                    opacity: draggedSpreadId === s.id ? 0.4 : 1,
                   }}
                 >
-                  <SpreadPreview
-                    elements={s.elements}
-                    previewUrls={previewUrls}
-                    background={
-                      s.background_photo_id && previewUrls.get(s.background_photo_id)
-                        ? { url: previewUrls.get(s.background_photo_id)!, blur: s.background_blur, opacity: s.background_opacity }
-                        : null
-                    }
-                  />
+                  <button
+                    onClick={() => onPick(album, s)}
+                    title={`עמוד ${i + 1}`}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      position: "relative",
+                      aspectRatio: `${s.width_cm ?? album.width_cm} / ${s.height_cm ?? album.height_cm}`,
+                      minWidth: 0,
+                      border: "none",
+                      background: "#fff",
+                      overflow: "hidden",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <SpreadPreview
+                      elements={s.elements}
+                      previewUrls={previewUrls}
+                      background={
+                        s.background_photo_id && previewUrls.get(s.background_photo_id)
+                          ? { url: previewUrls.get(s.background_photo_id)!, blur: s.background_blur, opacity: s.background_opacity }
+                          : null
+                      }
+                    />
+                  </button>
                   <span
                     style={{
                       position: "absolute",
-                      bottom: 4,
-                      insetInlineStart: 4,
-                      fontSize: 10,
+                      top: 4,
+                      right: 4,
+                      minWidth: 20,
+                      height: 20,
+                      padding: "0 4px",
+                      fontSize: 9,
                       fontWeight: 700,
-                      padding: "1px 6px",
                       borderRadius: 999,
-                      background: "rgba(20,18,32,0.6)",
+                      background: "rgba(0,0,0,0.6)",
                       color: "#fff",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
                       pointerEvents: "none",
                     }}
                   >
                     {i + 1}
                   </span>
-                </button>
+                  <button
+                    onClick={() => removeSpread(s.id)}
+                    title="מחיקת עמוד"
+                    style={{
+                      position: "absolute",
+                      top: 4,
+                      left: 4,
+                      height: 20,
+                      width: 20,
+                      borderRadius: 999,
+                      border: "none",
+                      background: "rgba(0,0,0,0.6)",
+                      color: "#fff",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <IconAlbumClose size={9} />
+                  </button>
+                </div>
               );
             })}
           </div>
