@@ -1718,6 +1718,14 @@ export default function AlbumSpreadCanvasEditor({
   // Live rectangle while dragging a selection marquee on empty canvas — null when not marqueeing.
   const [marqueeBox, setMarqueeBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [frameTargetId, setFrameTargetId] = useState<string | null>(null);
+  // Alt/Option+drag one photo frame onto another to swap their photos (content only — each
+  // frame keeps its own position/size/border/rotation). altSwapSourceId is set on pointerdown;
+  // altSwapTargetId tracks whichever OTHER photo frame the pointer is currently over, updated on
+  // every move via a plain point-in-box hit test (same idea as the marquee's own hit test).
+  // Releasing over a valid target swaps; releasing over nothing falls back to the older
+  // Alt+click behavior (recenter the source photo's focal point) so a plain Alt+click still works.
+  const [altSwapSourceId, setAltSwapSourceId] = useState<string | null>(null);
+  const [altSwapTargetId, setAltSwapTargetId] = useState<string | null>(null);
   const [pickingBackground, setPickingBackground] = useState(false);
   const [backgroundPhotoId, setBackgroundPhotoId] = useState(spread.background_photo_id);
   const [backgroundBlur, setBackgroundBlur] = useState(spread.background_blur);
@@ -2647,6 +2655,16 @@ export default function AlbumSpreadCanvasEditor({
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
 
+    if (altSwapSourceId) {
+      const xPct = ((e.clientX - rect.left) / rect.width) * 100;
+      const yPct = ((e.clientY - rect.top) / rect.height) * 100;
+      const hit = elements.find(
+        (x) => x.type === "photo" && x.id !== altSwapSourceId && xPct >= x.xPct && xPct <= x.xPct + x.widthPct && yPct >= x.yPct && yPct <= x.yPct + x.heightPct
+      );
+      setAltSwapTargetId(hit?.id ?? null);
+      return;
+    }
+
     if (marqueeRef.current) {
       const curX = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
       const curY = Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100));
@@ -2803,6 +2821,29 @@ export default function AlbumSpreadCanvasEditor({
   };
 
   const endDrag = () => {
+    if (altSwapSourceId) {
+      const sourceId = altSwapSourceId;
+      const targetId = altSwapTargetId;
+      setAltSwapSourceId(null);
+      setAltSwapTargetId(null);
+      if (targetId) {
+        setElements((prev) => {
+          const source = prev.find((x) => x.id === sourceId);
+          const target = prev.find((x) => x.id === targetId);
+          if (!source || !target || source.type !== "photo" || target.type !== "photo") return prev;
+          return prev.map((el) => {
+            if (el.id === sourceId) return { ...el, photoId: target.photoId, focalX: target.focalX, focalY: target.focalY, zoom: target.zoom };
+            if (el.id === targetId) return { ...el, photoId: source.photoId, focalX: source.focalX, focalY: source.focalY, zoom: source.zoom };
+            return el;
+          });
+        });
+      } else {
+        // Released without ever hovering another frame — same fallback as the original
+        // Alt+click behavior: just recenter this photo's focal point.
+        updateElement(sourceId, { focalX: 50, focalY: 50 });
+      }
+      return;
+    }
     dragRef.current = null;
     if (marqueeRef.current) {
       justMarqueedRef.current = !!marqueeBox && (marqueeBox.w > 0.5 || marqueeBox.h > 0.5);
@@ -3135,12 +3176,19 @@ export default function AlbumSpreadCanvasEditor({
                   <div
                     key={el.id}
                     onPointerDown={(e) => {
-                      // Alt/Cmd+click centers the PHOTO inside its own fixed frame (resets its
-                      // focal point) — it never moves the frame itself across the page.
+                      // Alt/Cmd held: start a swap gesture instead of the normal move-drag. A
+                      // plain Alt+click (released without ever hovering another frame) still
+                      // falls back to the original behavior — recenter this photo's focal point
+                      // inside its own fixed frame — handled in endDrag below.
                       if (photo && (e.altKey || e.metaKey)) {
                         e.stopPropagation();
+                        try {
+                          (e.target as Element).setPointerCapture(e.pointerId);
+                        } catch {
+                          // ignored — losing capture just means a drag leaving the frame stops tracking
+                        }
                         setSelectedIds(new Set([el.id]));
-                        updateElement(el.id, { focalX: 50, focalY: 50 });
+                        setAltSwapSourceId(el.id);
                         return;
                       }
                       if (e.shiftKey) {
@@ -3206,13 +3254,16 @@ export default function AlbumSpreadCanvasEditor({
                       top: `${el.yPct}%`,
                       width: `${el.widthPct}%`,
                       height: `${el.heightPct}%`,
-                      outline: el.borderWidth
+                      outline: altSwapTargetId === el.id
+                        ? "3px solid var(--color-amber-deep)"
+                        : el.borderWidth
                         ? undefined
                         : panModeId === el.id
                         ? "2px solid var(--color-sage)"
                         : isSelected
                         ? "2px solid var(--color-amber-deep)"
                         : "1px dashed rgba(255,255,255,0.6)",
+                      outlineOffset: altSwapTargetId === el.id ? "-3px" : undefined,
                       // box-shadow (unlike outline, and unlike a filter on the img) isn't clipped
                       // by this div's own overflow-hidden — it's what lets the shadow bleed past
                       // the frame, and the border below folds into it for the same reason.
@@ -3222,6 +3273,9 @@ export default function AlbumSpreadCanvasEditor({
                       // clipped photo as one rigid tile, instead of only the image content
                       // spinning inside a frame that stays visually fixed.
                       transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
+                      // Dim the frame currently being dragged as an alt-swap source, so it's
+                      // visually clear which photo is "picked up" while hovering for a target.
+                      opacity: altSwapSourceId === el.id ? 0.45 : 1,
                     }}
                   >
                     {photo?.url ? (
