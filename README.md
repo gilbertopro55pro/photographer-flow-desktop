@@ -45,7 +45,11 @@ cover, so it's the one piece built natively — everything else just IS the webs
 What's built and working right now:
 - Electron shell (main + preload + Vite/React renderer), typed, builds clean.
 - Login using the **same Supabase project** as the web app.
-- Real gallery → album → page browsing, backed by the actual database.
+- Real gallery → album → page browsing, backed by the actual database. A gallery with no album yet
+  gets a "צור אלבום" button instead of a dead end — creating one (size presets, blank/template
+  wizard) stays website-only (a plain form, no filesystem dependency to justify native code), but
+  the button navigates the embedded, already-signed-in view straight to that gallery's page via
+  `showWebsite(path)` instead of leaving the photographer to find it themselves.
 - The full canvas editor ported from the web app: drag/resize/rotate photos, masks, text, borders,
   shadow, blur, opacity, multi-select + marquee select, bring-to-front/send-to-back, Cmd/Ctrl+Z
   undo, right-click and Delete-key support.
