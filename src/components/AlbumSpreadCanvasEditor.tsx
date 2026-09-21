@@ -1234,21 +1234,6 @@ export function boxShadowFor(shadowPct: number | undefined, distancePct?: number
   return `${offsetPx}px ${offsetPx}px ${blurPx}px rgba(0,0,0,${alpha})`;
 }
 
-// An `outline` (even with a negative offset) gets silently clipped by this same element's own
-// overflow-hidden, so the border is folded into an inset box-shadow entry instead — box-shadow,
-// unlike outline, isn't subject to that clipping.
-export function combinedBoxShadowFor(
-  shadowPct: number | undefined,
-  borderWidthPx: number | undefined,
-  borderColor: string | undefined,
-  distancePct?: number,
-  blurPct?: number
-): string | undefined {
-  const drop = boxShadowFor(shadowPct, distancePct, blurPct);
-  const border = borderWidthPx ? `inset 0 0 0 ${borderWidthPx}px ${borderColor ?? "#fff"}` : undefined;
-  return [drop, border].filter(Boolean).join(", ") || undefined;
-}
-
 // Anchored flyout panels (masks/ornaments/shapes) open below their trigger button, which can sit
 // anywhere down a tall, independently-scrollable sidebar — a fixed `max-h-[65vh]` from the panel's
 // OWN top clips its bottom items whenever the trigger itself is already low on screen (65vh past a
@@ -3447,18 +3432,23 @@ export default function AlbumSpreadCanvasEditor({
                       height: `${el.heightPct}%`,
                       outline: altSwapTargetId === el.id
                         ? "3px solid var(--color-amber-deep)"
-                        : el.borderWidth
-                        ? undefined
                         : panModeId === el.id
                         ? "2px solid var(--color-sage)"
                         : isSelected
                         ? "2px solid var(--color-amber-deep)"
                         : "1px dashed rgba(255,255,255,0.6)",
                       outlineOffset: altSwapTargetId === el.id ? "-3px" : undefined,
-                      // box-shadow (unlike outline, and unlike a filter on the img) isn't clipped
-                      // by this div's own overflow-hidden — it's what lets the shadow bleed past
-                      // the frame, and the border below folds into it for the same reason.
-                      boxShadow: combinedBoxShadowFor(el.shadow, el.borderWidth, el.borderColor, el.shadowDistance, el.shadowBlur),
+                      // Drop shadow only — stays on this element (not clipped by its own
+                      // overflow-hidden, so it can bleed past the cropped frame). The border used to
+                      // live here too (folded into this same box-shadow, via combinedBoxShadowFor),
+                      // but that also meant a configured border silently suppressed the selection
+                      // outline above (an opaque photo <img> child paints on top of a parent's own
+                      // box-shadow in normal paint order, so an inset border segment here would have
+                      // been invisible behind the photo anyway). Border now lives on a separate,
+                      // later sibling div below (guaranteed to paint above the img), matching the
+                      // web app's own fix — selection outline and photo border no longer compete for
+                      // the same CSS property.
+                      boxShadow: boxShadowFor(el.shadow, el.shadowDistance, el.shadowBlur),
                       // Rotation lives on THIS element (not the <img>) so the outline and
                       // box-shadow — both decorations of this same box — rotate along with the
                       // clipped photo as one rigid tile, instead of only the image content
@@ -3520,6 +3510,15 @@ export default function AlbumSpreadCanvasEditor({
                       >
                         +
                       </span>
+                    )}
+                    {!!el.borderWidth && (
+                      // A later sibling than the <img> above, not the parent's own box-shadow —
+                      // guarantees the border paints ON TOP of the photo regardless of stacking-
+                      // context edge cases. See the parent's boxShadow comment for the full story.
+                      <div
+                        className="absolute inset-0 pointer-events-none"
+                        style={{ boxShadow: `inset 0 0 0 ${el.borderWidth}px ${el.borderColor ?? "#fff"}` }}
+                      />
                     )}
                     {isSelected && !el.locked && renderResizeHandles(el, startDrag)}
                   </div>
