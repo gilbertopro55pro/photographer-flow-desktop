@@ -150,6 +150,28 @@ export default function AlbumBrowser({ initialGalleryId }: { initialGalleryId?: 
         const target = spreads.find((s) => s.id === spreadId);
         if (target) setView({ screen: "edit", gallery: view.gallery, album: view.album, spread: target });
       }}
+      // Ported from the web app's own createBlankSpread — same insert shape, including a
+      // best-effort first photo for photo_id_1 (a spread always needs one; the web app defaults it
+      // to the gallery's own first photo too). New spread appends at the end (sort_order) and the
+      // editor switches straight to it, same as picking an existing page from the grid.
+      onAddPage={async () => {
+        const { data: firstPhoto } = await supabase
+          .from("gallery_photos")
+          .select("id")
+          .eq("gallery_id", view.gallery.id)
+          .order("sort_order", { ascending: true })
+          .limit(1)
+          .maybeSingle<{ id: string }>();
+        const { data: newSpread } = await supabase
+          .from("gallery_album_spreads")
+          .insert({ album_id: view.album.id, sort_order: spreads.length, layout: "custom", elements: [], photo_id_1: firstPhoto?.id })
+          .select()
+          .single<GalleryAlbumSpreadRow>();
+        if (newSpread) {
+          setSpreads((prev) => [...prev, newSpread]);
+          setView({ screen: "edit", gallery: view.gallery, album: view.album, spread: newSpread });
+        }
+      }}
     />
   );
 }

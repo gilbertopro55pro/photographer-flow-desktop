@@ -972,7 +972,6 @@ function ShapeFloatingMenu({
   onDeleteSelected,
   onBringToFront,
   onSendToBack,
-  onOpenMasksPicker,
 }: {
   el: AlbumShapeElement;
   albumHeightCm: number;
@@ -980,9 +979,7 @@ function ShapeFloatingMenu({
   onDeleteSelected: () => void;
   onBringToFront: () => void;
   onSendToBack: () => void;
-  onOpenMasksPicker: (rect: { top: number; left: number; width: number }) => void;
 }) {
-  const maskButtonRef = useRef<HTMLButtonElement>(null);
   const isLine = el.shapeStyle === "line";
   const linePx = Math.max(1, Math.min(100, Math.round((el.heightPct / 100) * albumHeightCm * PX_PER_CM)));
   return (
@@ -1005,17 +1002,9 @@ function ShapeFloatingMenu({
           />
         ))}
       </div>
-      <button
-        ref={maskButtonRef}
-        onClick={() => {
-          const r = maskButtonRef.current?.getBoundingClientRect();
-          if (r) onOpenMasksPicker({ top: r.bottom, left: r.left, width: r.width });
-        }}
-        className="w-full h-7 rounded-lg bg-chip flex items-center justify-center gap-1.5 text-[11px] font-semibold text-ink-soft"
-      >
-        <IconMask size={12} />
-        {el.maskId ? "שינוי מסכה" : "החלת מסכה"}
-      </button>
+      {/* No per-shape "change mask" trigger here anymore — the main מסכות sidebar button already
+          opens the exact same picker for whatever shape/photo is currently selected, so this was a
+          redundant second entry point into the identical panel. */}
       {isLine && (
         <MiniSlider
           label="עובי הקו"
@@ -1647,6 +1636,7 @@ export default function AlbumSpreadCanvasEditor({
   onDeleteCustomOrnament,
   spreads,
   onSwitchSpread,
+  onAddPage,
   sidePanelOffset,
   onSidePanelOffsetChange,
 }: {
@@ -1683,6 +1673,9 @@ export default function AlbumSpreadCanvasEditor({
   // omitted-safe: no strip renders without it, same as the customOrnament* props above.
   spreads?: GalleryAlbumSpreadRow[];
   onSwitchSpread?: (spreadId: string) => void;
+  // "עמוד חדש" header button — omitted-safe, same as onSwitchSpread above (no button renders
+  // without it). void | Promise<void> for the same reason onSave is: requestLeave awaits it.
+  onAddPage?: () => void | Promise<void>;
   // The "עריכת תמונה" panel's drag offset, owned by the PARENT page (AlbumPageEditor, not this
   // component) so it survives this editor's own full remount on every page switch — see
   // sidePanelDrag's own comment for why that remount would otherwise reset a locally-owned offset
@@ -1824,6 +1817,7 @@ export default function AlbumSpreadCanvasEditor({
   const [backgroundPanelOpen, setBackgroundPanelOpen] = useState(false);
   const [backgroundPanelRect, setBackgroundPanelRect] = useState<{ top: number; left: number; width: number } | null>(null);
   const bgSlidersButtonRef = useRef<HTMLButtonElement>(null);
+  const backgroundButtonRef = useRef<HTMLButtonElement>(null);
   const [masksPickerOpen, setMasksPickerOpen] = useState(false);
   const [masksPickerClosing, setMasksPickerClosing] = useState(false);
   // Anchors the masks dropdown directly below the מסכות button, at that button's own width —
@@ -2991,6 +2985,15 @@ export default function AlbumSpreadCanvasEditor({
         <div className="flex items-center justify-between mb-1">
           <h2 className="text-base font-bold font-display">{mode === "custom" ? "עיצוב חופשי" : "הוספת טקסט לעמוד"}</h2>
           <div className="flex items-center gap-2">
+            {mode === "custom" && onAddPage && (
+              <button
+                onClick={() => requestLeave(() => onAddPage())}
+                className="h-8 pr-3 pl-2.5 rounded-full flex items-center gap-1 bg-white border border-line text-xs font-bold whitespace-nowrap text-ink"
+              >
+                <IconPlusSmall size={13} />
+                עמוד חדש
+              </button>
+            )}
             {mode === "custom" && (
               <button
                 onClick={() => setGuideOpen(true)}
@@ -3755,10 +3758,6 @@ export default function AlbumSpreadCanvasEditor({
                 onDeleteSelected={removeSelected}
                 onBringToFront={() => bringToFront(lastSideSelection.el.id)}
                 onSendToBack={() => sendToBack(lastSideSelection.el.id)}
-                onOpenMasksPicker={(rect) => {
-                  setMasksPanelRect({ ...rect, maxHeight: panelMaxHeight(rect.top + 4) });
-                  setMasksPickerOpen(true);
-                }}
               />
             ) : lastSideSelection.type === "text" ? (
               <TextFloatingMenu el={lastSideSelection.el} album={album} onUpdate={(patch) => updateElement(lastSideSelection.el.id, patch)} onDeleteSelected={removeSelected} />
@@ -3867,10 +3866,10 @@ export default function AlbumSpreadCanvasEditor({
         <div className="lg:w-[380px] lg:shrink-0 lg:overflow-y-auto lg:pr-1 lg:min-h-0">
         {selectedElements.length > 0 && (
           <div className="space-y-2 mt-2.5">
-            {selectedText && (
+            {selectedPhotos.length === 1 && anchorPhoto && (
               <p className="text-[11px] text-ink-soft text-center flex items-center justify-center gap-1">
                 <IconInfo size={13} />
-                צבע, יישור, גופן, גודל ומחיקה נמצאים בתפריט הצף ליד הטקסט
+                לחצו על התמונה כדי לפתוח את תפריט העיצוב הצף (שחור-לבן, ספיה, שקיפות, טשטוש, סיבוב, צל וקו מתאר)
               </p>
             )}
             {selectedOrnament && (
@@ -3882,13 +3881,7 @@ export default function AlbumSpreadCanvasEditor({
             {selectedShape && (
               <p className="text-[11px] text-ink-soft text-center flex items-center justify-center gap-1">
                 <IconInfo size={13} />
-                צבע, מסכה, שקיפות, סיבוב, סדר שכבות ומחיקה נמצאים בתפריט הצף ליד הצורה
-              </p>
-            )}
-            {selectedPhotos.length === 1 && anchorPhoto && (
-              <p className="text-[11px] text-ink-soft text-center flex items-center justify-center gap-1">
-                <IconInfo size={13} />
-                לחצו על התמונה כדי לפתוח את תפריט העיצוב הצף (שחור-לבן, ספיה, שקיפות, טשטוש, סיבוב, צל וקו מתאר)
+                צבע, מסכה, שקיפות, סדר שכבות ומחיקה נמצאים בתפריט הצף ליד הצורה
               </p>
             )}
             {selectedPhotos.length > 1 && (
@@ -3897,37 +3890,12 @@ export default function AlbumSpreadCanvasEditor({
                 נבחרו {selectedPhotos.length} תמונות — גרירה, שינוי גודל ופעולות מהתפריט הצף יחולו על כולן
               </p>
             )}
-            <button onClick={removeSelected} className="w-full h-8 rounded-full bg-chip text-rose text-xs font-semibold">
-              מחיקה
-            </button>
           </div>
         )}
 
-        <div className="mt-3 pt-3 border-t border-line">
-          <p className="text-[11px] font-bold text-ink-soft mb-1.5">רקע לכל העמוד</p>
-          {backgroundPhoto?.url ? (
-            <div className="space-y-2">
-              <div className="relative h-16 rounded-lg overflow-hidden">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={backgroundPhoto.url} alt="" className="w-full h-full object-cover" style={{ opacity: backgroundOpacity / 100 }} />
-                <button onClick={removeBackground} className="absolute top-1 left-1 h-6 w-6 rounded-full bg-black/60 text-white text-xs flex items-center justify-center">
-                  <IconClose size={13} />
-                </button>
-              </div>
-              {/* שקיפות/טשטוש/זום live in a floating panel now — opened from a small button at the
-                  canvas's own bottom-left corner (see its render site) — instead of always taking
-                  up sidebar space here. */}
-            </div>
-          ) : (
-            <button onClick={openPickerForBackground} className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink">
-              + בחירת תמונת רקע
-            </button>
-          )}
-        </div>
-
-        <div className="flex gap-2 mt-3">
-          {mode === "custom" && (
-            <>
+        <div className="space-y-2 mt-2.5">
+          <div className="flex gap-2">
+            {mode === "custom" && (
               <button
                 ref={photoSizeButtonRef}
                 onClick={() => {
@@ -3939,9 +3907,29 @@ export default function AlbumSpreadCanvasEditor({
               >
                 + תמונה
               </button>
+            )}
+            {mode === "custom" && (
+              <button
+                ref={backgroundButtonRef}
+                // Set/unset only — the opacity/blur fine-tune sliders live in their own circle at
+                // the canvas's bottom-left corner (see bgSlidersButtonRef), matching the web app.
+                onClick={backgroundPhoto ? removeBackground : openPickerForBackground}
+                className="flex-1 rounded-lg py-2.5 text-sm font-semibold border"
+                style={{
+                  background: backgroundPhoto ? "var(--color-amber-deep)" : "#fff",
+                  color: backgroundPhoto ? "#fff" : "#201f33",
+                  borderColor: "var(--color-line)",
+                }}
+              >
+                תמונת רקע
+              </button>
+            )}
+            {mode === "custom" && (
               <button onClick={addFrame} className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink">
                 + מסגרת
               </button>
+            )}
+            {mode === "custom" && (
               <button
                 ref={templateButtonRef}
                 onClick={() => {
@@ -3954,86 +3942,92 @@ export default function AlbumSpreadCanvasEditor({
                 }}
                 className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink flex items-center justify-center gap-1.5"
               >
-                <IconGrid size={14} />
+                <IconGrid size={15} />
                 תבניות
               </button>
-            </>
+            )}
+            <button
+              ref={textButtonRef}
+              onClick={() => {
+                const r = textButtonRef.current?.getBoundingClientRect();
+                if (r) {
+                  const w = Math.max(r.width, 320);
+                  setTextPanelRect({ top: r.bottom, left: r.right - w, width: w, maxHeight: panelMaxHeight(r.bottom + 4) });
+                }
+                setTextDraftOpen(true);
+              }}
+              title="הוספת טקסט"
+              className="flex-1 rounded-full py-2.5 text-sm font-semibold bg-white border border-line text-ink flex items-center justify-center gap-1.5"
+            >
+              <span className="flex items-center justify-center h-5 w-5 rounded-full font-display font-bold text-[11px]" style={{ background: "var(--color-chip)" }}>
+                T
+              </span>
+              הוספת טקסט
+            </button>
+          </div>
+          {mode === "custom" && (
+            <div className="flex gap-2">
+              <button
+                ref={masksButtonRef}
+                onClick={() => {
+                  const r = masksButtonRef.current?.getBoundingClientRect();
+                  if (r) setMasksPanelRect({ top: r.bottom, left: r.right - Math.max(r.width, 320), width: Math.max(r.width, 320), maxHeight: panelMaxHeight(r.bottom + 4) });
+                  setMasksPickerOpen(true);
+                }}
+                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink flex items-center justify-center gap-1.5"
+              >
+                <IconMask size={15} />
+                מסכות
+              </button>
+              <button
+                ref={ornamentsButtonRef}
+                onClick={() => {
+                  const r = ornamentsButtonRef.current?.getBoundingClientRect();
+                  if (r) setOrnamentsPanelRect({ top: r.bottom, left: r.right - Math.max(r.width, 320), width: Math.max(r.width, 320), maxHeight: panelMaxHeight(r.bottom + 4) });
+                  setOrnamentsPickerOpen(true);
+                }}
+                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink flex items-center justify-center gap-1.5"
+              >
+                <IconOrnament size={15} />
+                עיטורים
+              </button>
+              <button
+                ref={shapesButtonRef}
+                onClick={() => {
+                  const r = shapesButtonRef.current?.getBoundingClientRect();
+                  if (r) setShapesPanelRect({ top: r.bottom, left: r.right - Math.max(r.width, 320), width: Math.max(r.width, 320), maxHeight: panelMaxHeight(r.bottom + 4) });
+                  setShapesPickerOpen(true);
+                }}
+                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink flex items-center justify-center gap-1.5"
+              >
+                <IconShape size={15} />
+                צורות
+              </button>
+              <button
+                onClick={() => setSaveTemplateOpen(true)}
+                disabled={!elements.some((e) => e.type === "photo")}
+                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink disabled:opacity-50 flex items-center justify-center gap-1.5"
+              >
+                <IconSave size={15} />
+                שמירה כתבנית
+              </button>
+              <button
+                onClick={() => onSave(elements, { photoId: backgroundPhotoId, blur: backgroundBlur, opacity: backgroundOpacity, zoom: backgroundZoom })}
+                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-ink text-white border-2 border-[var(--color-sage)]"
+              >
+                שמירה
+              </button>
+            </div>
           )}
-          <button
-            ref={textButtonRef}
-            onClick={() => {
-              const r = textButtonRef.current?.getBoundingClientRect();
-              if (r) {
-                const w = Math.max(r.width, 320);
-                setTextPanelRect({ top: r.bottom, left: r.right - w, width: w, maxHeight: panelMaxHeight(r.bottom + 4) });
-              }
-              setTextDraftOpen(true);
-            }}
-            className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink"
-          >
-            + טקסט
-          </button>
+          {mode !== "custom" && (
+            <button
+              onClick={() => onSave(elements, { photoId: backgroundPhotoId, blur: backgroundBlur, opacity: backgroundOpacity, zoom: backgroundZoom })}
+              className="w-full rounded-lg py-2.5 text-sm font-semibold bg-ink text-white border-2 border-[var(--color-sage)]"
+            >
+              שמירה
+            </button>
+          )}
         </div>
-        {mode === "custom" && (
-          <button
-            ref={masksButtonRef}
-            onClick={() => {
-              const r = masksButtonRef.current?.getBoundingClientRect();
-              if (r) setMasksPanelRect({ top: r.bottom, left: r.left, width: r.width, maxHeight: panelMaxHeight(r.bottom + 4) });
-              setMasksPickerOpen(true);
-            }}
-            className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink mt-2 flex items-center justify-center gap-1.5"
-          >
-            <IconMask size={14} />
-            מסכות — גררו על תמונה כדי להחיל
-          </button>
-        )}
-        {mode === "custom" && (
-          <button
-            ref={ornamentsButtonRef}
-            onClick={() => {
-              const r = ornamentsButtonRef.current?.getBoundingClientRect();
-              if (r) setOrnamentsPanelRect({ top: r.bottom, left: r.left, width: r.width, maxHeight: panelMaxHeight(r.bottom + 4) });
-              setOrnamentsPickerOpen(true);
-            }}
-            className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink mt-2 flex items-center justify-center gap-1.5"
-          >
-            <IconOrnament size={14} />
-            עיטורים
-          </button>
-        )}
-        {mode === "custom" && (
-          <button
-            ref={shapesButtonRef}
-            onClick={() => {
-              const r = shapesButtonRef.current?.getBoundingClientRect();
-              if (r) setShapesPanelRect({ top: r.bottom, left: r.left, width: r.width, maxHeight: panelMaxHeight(r.bottom + 4) });
-              setShapesPickerOpen(true);
-            }}
-            className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink mt-2 flex items-center justify-center gap-1.5"
-          >
-            <IconShape size={14} />
-            צורות
-          </button>
-        )}
-
-        {mode === "custom" && (
-          <button
-            onClick={() => setSaveTemplateOpen(true)}
-            disabled={!elements.some((e) => e.type === "photo")}
-            className="w-full rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink mt-2 disabled:opacity-50 flex items-center justify-center gap-1.5"
-          >
-            <IconSave size={14} />
-            שמירת הפריסה כתבנית
-          </button>
-        )}
-
-        <button
-          onClick={() => onSave(elements, { photoId: backgroundPhotoId, blur: backgroundBlur, opacity: backgroundOpacity, zoom: backgroundZoom })}
-          className="w-full rounded-lg py-3 text-sm font-semibold bg-ink text-white mt-2.5"
-        >
-          שמירה
-        </button>
 
         {mode === "custom" && (
           <div className="mt-3 pt-3 border-t border-line">
@@ -4429,7 +4423,7 @@ export default function AlbumSpreadCanvasEditor({
                 </button>
               ))}
             </div>
-            <div className="grid grid-cols-2 lg:grid-cols-5 gap-2.5 mb-4">
+            <div className="grid grid-cols-3 gap-2.5 mb-4">
               {TEMPLATE_BANK[templateTab].map((t) => (
                 <button key={t.name} onClick={() => applyTemplate(t.frames)} className="rounded-xl border border-line p-2 text-center">
                   <div className="relative aspect-[16/10] rounded-md bg-chip mb-1.5">
@@ -4444,7 +4438,7 @@ export default function AlbumSpreadCanvasEditor({
             {templates.length > 0 && (
               <>
                 <p className="text-sm font-bold mb-3">התבניות שלי</p>
-                <div className="grid grid-cols-2 lg:grid-cols-5 gap-2.5">
+                <div className="grid grid-cols-3 gap-2.5">
                   {templates.map((t) => (
                     <button key={t.id} onClick={() => applyTemplate(t.frames)} className="rounded-xl border border-line p-2 text-center">
                       <div className="relative aspect-[16/10] rounded-md bg-chip mb-1.5">

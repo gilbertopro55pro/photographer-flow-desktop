@@ -32,6 +32,7 @@ export default function AlbumPageEditor({
   onSaved,
   spreads,
   onSwitchSpread,
+  onAddPage,
 }: {
   gallery: GalleryRow;
   album: GalleryAlbumRow;
@@ -42,6 +43,7 @@ export default function AlbumPageEditor({
   // the canvas editor — omitted-safe: no strip renders without it.
   spreads?: GalleryAlbumSpreadRow[];
   onSwitchSpread?: (spreadId: string) => void;
+  onAddPage?: () => void | Promise<void>;
 }) {
   const [photos, setPhotos] = useState<PhotoWithUrl[]>([]);
   const [folders, setFolders] = useState<GalleryFolderRow[]>([]);
@@ -299,6 +301,7 @@ export default function AlbumPageEditor({
         onDeleteCustomOrnament={handleDeleteCustomOrnament}
         spreads={spreads}
         onSwitchSpread={onSwitchSpread}
+        onAddPage={onAddPage}
         sidePanelOffset={sidePanelOffset}
         onSidePanelOffsetChange={setSidePanelOffset}
       />
