@@ -14,7 +14,13 @@ type View =
 // initialGalleryId: set when the hybrid shell hands off "open this gallery's album" from the
 // embedded website (see App.tsx's onOpenGalleryAlbum) — fetches just that gallery and jumps
 // straight to its album-page grid instead of starting at the full gallery list.
-export default function AlbumBrowser({ initialGalleryId }: { initialGalleryId?: string | null }) {
+export default function AlbumBrowser({
+  initialGalleryId,
+  quickExportFormat,
+}: {
+  initialGalleryId?: string | null;
+  quickExportFormat?: "psd" | "jpg" | "pdf" | null;
+}) {
   const [view, setView] = useState<View>({ screen: "galleries" });
 
   // Lifted out of the grid screen (used to be AlbumPageGrid's own local state) so it survives the
@@ -131,6 +137,7 @@ export default function AlbumBrowser({ initialGalleryId }: { initialGalleryId?: 
         // and the preview is now right there in the grid card itself, and the export moved into
         // AlbumPageEditor's own floating button).
         onPick={(album, spread) => setView({ screen: "edit", gallery: view.gallery, album, spread })}
+        initialExportFormat={quickExportFormat}
       />
     );
   return (
@@ -257,6 +264,7 @@ function AlbumPageGrid({
   loading,
   onBack,
   onPick,
+  initialExportFormat,
 }: {
   gallery: GalleryRow;
   album: GalleryAlbumRow | null;
@@ -266,8 +274,13 @@ function AlbumPageGrid({
   loading: boolean;
   onBack: () => void;
   onPick: (album: GalleryAlbumRow, spread: GalleryAlbumSpreadRow) => void;
+  initialExportFormat?: "psd" | "jpg" | "pdf" | null;
 }) {
-  const [exportModalOpen, setExportModalOpen] = useState(false);
+  // Lazy initial state — reads initialExportFormat only on this component's first render (a quick-
+  // export handoff from AlbumQuickAccessButton, see AlbumBrowser's own prop), so the modal opens
+  // pre-set to that format immediately without an extra click, while closing it normally afterward
+  // (setExportModalOpen(false)) behaves exactly as before, untouched by the prop.
+  const [exportModalOpen, setExportModalOpen] = useState(!!initialExportFormat);
   // Drag-and-drop reorder — ported from the web app's own reorderSpreads: dropping the dragged
   // spread onto targetIndex moves it there, and the whole array's sort_order is recomputed rather
   // than diffing which pairs actually moved (simplest correct approach for a short list).
@@ -418,7 +431,7 @@ function AlbumPageGrid({
         )}
       </div>
       {exportModalOpen && album && (
-        <ExportAlbumModal gallery={gallery} album={album} spreads={spreads} onClose={() => setExportModalOpen(false)} />
+        <ExportAlbumModal gallery={gallery} album={album} spreads={spreads} onClose={() => setExportModalOpen(false)} initialFormat={initialExportFormat} />
       )}
     </div>
   );
@@ -435,17 +448,19 @@ function ExportAlbumModal({
   album,
   spreads,
   onClose,
+  initialFormat,
 }: {
   gallery: GalleryRow;
   album: GalleryAlbumRow;
   spreads: GalleryAlbumSpreadRow[];
   onClose: () => void;
+  initialFormat?: "psd" | "jpg" | "pdf" | null;
 }) {
   const hasCover = !!album.cover_photo_id;
   const totalPages = (hasCover ? 1 : 0) + spreads.length;
   const [from, setFrom] = useState(1);
   const [to, setTo] = useState(totalPages);
-  const [format, setFormat] = useState<"psd" | "pdf" | "jpg">("psd");
+  const [format, setFormat] = useState<"psd" | "pdf" | "jpg">(initialFormat ?? "psd");
   const [pdfQuality, setPdfQuality] = useState<"light" | "full">("light");
   const [exporting, setExporting] = useState(false);
   const [status, setStatus] = useState<string | null>(null);

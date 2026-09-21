@@ -6,7 +6,13 @@ import UploadScreen from "./UploadScreen";
 type Photographer = { id: string; name: string; email: string };
 type Section = "albums" | "upload";
 
-export default function Dashboard({ initialGalleryId }: { initialGalleryId?: string | null }) {
+export default function Dashboard({
+  initialGalleryId,
+  quickExportFormat,
+}: {
+  initialGalleryId?: string | null;
+  quickExportFormat?: "psd" | "jpg" | "pdf" | null;
+}) {
   const [photographer, setPhotographer] = useState<Photographer | null>(null);
   const [section, setSection] = useState<Section>("albums");
 
@@ -85,7 +91,7 @@ export default function Dashboard({ initialGalleryId }: { initialGalleryId?: str
         </button>
       </div>
 
-      {section === "albums" ? <AlbumBrowser initialGalleryId={initialGalleryId} /> : <UploadScreen />}
+      {section === "albums" ? <AlbumBrowser initialGalleryId={initialGalleryId} quickExportFormat={quickExportFormat} /> : <UploadScreen />}
     </div>
   );
 }

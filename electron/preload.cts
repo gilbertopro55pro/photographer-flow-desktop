@@ -19,8 +19,8 @@ contextBridge.exposeInMainWorld("desktopApi", {
   showWebsite: (path?: string): void => {
     ipcRenderer.send("desktop:show-website", path);
   },
-  onOpenGalleryAlbum: (callback: (galleryId: string) => void): (() => void) => {
-    const listener = (_event: unknown, galleryId: string) => callback(galleryId);
+  onOpenGalleryAlbum: (callback: (galleryId: string, quickExportFormat: "psd" | "jpg" | "pdf" | null) => void): (() => void) => {
+    const listener = (_event: unknown, galleryId: string, quickExportFormat: "psd" | "jpg" | "pdf" | null) => callback(galleryId, quickExportFormat);
     ipcRenderer.on("desktop:open-gallery-album", listener);
     return () => ipcRenderer.removeListener("desktop:open-gallery-album", listener);
   },

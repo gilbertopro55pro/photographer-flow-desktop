@@ -11,6 +11,9 @@ export default function App() {
   // album tool from inside the embedded website. Consumed once by AlbumBrowser's own
   // initialGalleryId prop; normal in-app navigation after that doesn't touch this again.
   const [openGalleryId, setOpenGalleryId] = useState<string | null>(null);
+  // Rides along when the handoff came from AlbumQuickAccessButton's own quick-export buttons — see
+  // browserViewPreload.cts. Same "consumed once" story as openGalleryId above.
+  const [quickExportFormat, setQuickExportFormat] = useState<"psd" | "jpg" | "pdf" | null>(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -37,7 +40,10 @@ export default function App() {
   }, [sessionUserKey]);
 
   useEffect(() => {
-    return window.desktopApi.onOpenGalleryAlbum((galleryId) => setOpenGalleryId(galleryId));
+    return window.desktopApi.onOpenGalleryAlbum((galleryId, format) => {
+      setOpenGalleryId(galleryId);
+      setQuickExportFormat(format);
+    });
   }, []);
 
   if (session === undefined) {
@@ -48,5 +54,5 @@ export default function App() {
     );
   }
 
-  return session ? <Dashboard initialGalleryId={openGalleryId} /> : <LoginScreen />;
+  return session ? <Dashboard initialGalleryId={openGalleryId} quickExportFormat={quickExportFormat} /> : <LoginScreen />;
 }

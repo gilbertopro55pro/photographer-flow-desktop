@@ -26,7 +26,7 @@ declare global {
     desktopApi: {
       syncSession: (session: { access_token: string; refresh_token: string } | null) => void;
       showWebsite: (path?: string) => void;
-      onOpenGalleryAlbum: (callback: (galleryId: string) => void) => () => void;
+      onOpenGalleryAlbum: (callback: (galleryId: string, quickExportFormat: "psd" | "jpg" | "pdf" | null) => void) => () => void;
       pickFolder: () => Promise<string | null>;
       pickSavePath: (suggestedName: string) => Promise<string | null>;
       pickImageFiles: () => Promise<{ name: string; bytes: number[] }[]>;

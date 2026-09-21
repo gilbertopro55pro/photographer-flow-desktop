@@ -138,11 +138,15 @@ ipcMain.on("desktop:session-updated", (_event, session: { access_token: string; 
 // Fired from INSIDE the embedded website (via browserViewPreload.cts's desktopShellBridge) when
 // the photographer opens the album tool from there — swap to the native editor for real filesystem
 // access instead of that page's own (nonexistent, per openAlbumManage's bridge check) web version.
-ipcMain.on("desktop:open-native-album-editor", (_event, galleryId: string) => {
+// An optional quickExportFormat (from AlbumQuickAccessButton's own quick-export buttons) rides
+// along so the native editor can jump straight to the export modal, pre-set to that format,
+// instead of routing what's supposed to be a "quick" export through the web's own slower
+// server-side job queue just because the click originated from the embedded website.
+ipcMain.on("desktop:open-native-album-editor", (_event, galleryId: string, quickExportFormat: "psd" | "jpg" | "pdf" | null) => {
   const win = mainWindow;
   if (!win) return;
   hideWebsiteView(win);
-  win.webContents.send("desktop:open-gallery-album", galleryId);
+  win.webContents.send("desktop:open-gallery-album", galleryId, quickExportFormat ?? null);
 });
 
 // The native album editor's own "back to the system" button — re-shows the website view (already
