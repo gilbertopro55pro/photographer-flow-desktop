@@ -71,11 +71,15 @@ What's built and working right now:
   once here on desktop — and every time real Photoshop rejected the file ("problems reading
   layers", blank pages), even after the field values were checked against a real
   Photoshop-authored fixture. Closed; don't retry without new information (e.g. an ag-psd fix).
+- Persistent, on-disk cache for downloaded originals (`electron/photoDiskCache.ts`), size-bounded
+  at 2GB with least-recently-used eviction — a second export of an album this computer has already
+  exported (a re-run, a different page range, or just a different day) reads most photos straight
+  off disk instead of re-downloading every one from Supabase Storage again. Layered underneath
+  `RemotePhotoSource`'s existing per-run in-memory cache, which still exists for the same reason it
+  always did (page renders never wait on a disk read for a photo already loaded this run).
 
 What's **not** built yet:
-1. Native photo caching/download from Supabase Storage — every open re-fetches each photo fresh.
-   Not urgent, just slower than it could be for a large album.
-2. Packaging & distribution: code signing for macOS (needs an Apple Developer account, $99/yr) and
+1. Packaging & distribution: code signing for macOS (needs an Apple Developer account, $99/yr) and
    Windows (needs a code-signing certificate), a real installer via `electron-builder`, and either
    a download page or an auto-update mechanism. None of this can be done without the account/cert
    credentials, which only the account owner can set up. An **unsigned** local build (a real .app,

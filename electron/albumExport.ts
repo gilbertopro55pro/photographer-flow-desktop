@@ -4,6 +4,7 @@ import { pxFromCm, renderAlbumPageJpeg, type PhotoSource } from "./albumRaster.j
 import { renderAlbumPagePsd } from "./albumPsd.js";
 import { generateAlbumPdf, ExportCancelledError } from "./albumPdf.js";
 import type { GalleryAlbumRow, GalleryAlbumSpreadRow } from "./albumTypes.js";
+import { getCachedPhoto, setCachedPhoto } from "./photoDiskCache.js";
 
 // Local, on-this-computer album export (PSD / JPG / PDF) — the desktop app's replacement for the
 // web app's server-side export jobs. Same rendering code as the web pipeline (albumRaster.ts /
@@ -52,7 +53,10 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 // renders, and the cache is byte-bounded (least-recently-used out first) so a long album can never
 // grow without limit — the exact failure that got the server's PDF worker killed for running out of
 // memory. A missing photo (404) resolves to null, like the web pipeline (that element is skipped);
-// any other failure throws, so a page can never silently lose a photo.
+// any other failure throws, so a page can never silently lose a photo. Backed by photoDiskCache.ts
+// underneath — that layer persists the same bytes across export runs (and app restarts), so a
+// re-export of an album this computer has exported before mostly reads from disk instead of
+// re-downloading every original again.
 class RemotePhotoSource implements PhotoSource {
   private cache = new Map<string, Buffer>();
   private inflight = new Map<string, Promise<Buffer | null>>();
@@ -97,7 +101,13 @@ class RemotePhotoSource implements PhotoSource {
     }
     const pending = this.inflight.get(key);
     if (pending) return pending;
-    const promise = this.download(urlPath, what)
+    const promise = (async () => {
+      const onDisk = await getCachedPhoto(key);
+      if (onDisk) return onDisk;
+      const buffer = await this.download(urlPath, what);
+      if (buffer) void setCachedPhoto(key, buffer);
+      return buffer;
+    })()
       .then((buffer) => {
         if (buffer) {
           this.cache.set(key, buffer);
