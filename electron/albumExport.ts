@@ -72,19 +72,32 @@ class RemotePhotoSource implements PhotoSource {
     this.token = token;
   }
 
+  // A stalled connection (no error, no data, just silence) never rejects on its own — a fetch with
+  // only the overall cancel signal would hang here indefinitely, freezing the whole export with no
+  // further progress updates. Each attempt gets its own 30s ceiling on top of that signal, so a
+  // stalled connection fails fast into the existing retry loop instead of hanging the export.
   private async download(urlPath: string, what: string): Promise<Buffer | null> {
     let lastError: unknown = null;
     for (let attempt = 0; attempt < 3; attempt++) {
       if (this.signal.aborted) throw new ExportCancelledError();
+      const t0 = Date.now();
       try {
-        const res = await fetch(`${this.baseUrl}${urlPath}`, { headers: { Authorization: `Bearer ${this.token}` }, signal: this.signal });
-        if (res.ok) return Buffer.from(await res.arrayBuffer());
+        const res = await fetch(`${this.baseUrl}${urlPath}`, {
+          headers: { Authorization: `Bearer ${this.token}` },
+          signal: AbortSignal.any([this.signal, AbortSignal.timeout(30_000)]),
+        });
+        if (res.ok) {
+          const buf = Buffer.from(await res.arrayBuffer());
+          console.log(`[export] downloaded ${what} (${urlPath}) in ${Date.now() - t0}ms, ${buf.length} bytes`);
+          return buf;
+        }
         if (res.status === 404) return null;
         lastError = new Error(res.status === 401 ? "פג תוקף ההתחברות — התחברו מחדש והריצו את הייצוא שוב" : `שגיאה בטעינת ${what} (${res.status})`);
         if (res.status === 401) throw lastError;
       } catch (e) {
         if (this.signal.aborted) throw new ExportCancelledError();
         if (e instanceof Error && e.message.startsWith("פג תוקף")) throw e;
+        console.log(`[export] ${what} (${urlPath}) attempt ${attempt + 1} failed after ${Date.now() - t0}ms: ${e instanceof Error ? e.message : e}`);
         lastError = e;
       }
       await sleep(800 * (attempt + 1));
@@ -208,6 +221,7 @@ export class AlbumExportJob {
     const total = (includeCover ? 1 : 0) + ranged.length;
     if (total === 0) throw new Error("אין עמודים בטווח שנבחר");
     if (input.savePath && total !== 1) throw new Error("ייצוא לקובץ בודד תומך בעמוד אחד בלבד");
+    console.log(`[export] starting: format=${input.format} total=${total} pages=${rangeStart}-${rangeEnd}`);
 
     const rootDir = sanitizeSegment(`${input.albumTitle} - ${input.galleryTitle}`);
     const pageWidthPx = pxFromCm(album.width_cm);
@@ -275,17 +289,22 @@ export class AlbumExportJob {
       for (const page of pages) {
         if (isCancelled()) throw new ExportCancelledError();
         onProgress({ processed, total, pageLabel: page.label });
+        console.log(`[export] page ${processed + 1}/${total} (${page.label}): prefetching photos...`);
         const ids = idsForPage(page.spread, album.cover_photo_id);
+        const tPrefetch = Date.now();
         await this.source.prefetch(ids.photoIds, ids.ornamentIds);
+        console.log(`[export] page ${processed + 1}/${total}: prefetch done in ${Date.now() - tPrefetch}ms, rendering...`);
         // One retry gives a genuinely transient failure a chance to self-heal; a page that still
         // fails aborts the whole export with the page named, never a silently incomplete folder.
         const renderOnce = () =>
           render({ album, spread: page.spread, isCover: page.isCover, pageWidthPx: page.widthPx, pageHeightPx: page.heightPx, source: this.source });
+        const tRender = Date.now();
         let buffer: Buffer | null;
         try {
           buffer = await renderOnce();
         } catch (e) {
           if (e instanceof ExportCancelledError) throw e;
+          console.log(`[export] page ${processed + 1}/${total}: render failed (${e instanceof Error ? e.message : e}), retrying once...`);
           await sleep(1500);
           try {
             buffer = await renderOnce();
@@ -294,6 +313,7 @@ export class AlbumExportJob {
             throw new Error(`רינדור ${page.label} נכשל: ${e2 instanceof Error ? e2.message : "שגיאה לא ידועה"}`);
           }
         }
+        console.log(`[export] page ${processed + 1}/${total}: render done in ${Date.now() - tRender}ms`);
         if (buffer) {
           const outPath = input.savePath ?? path.join(outDir, page.fileName);
           await fs.writeFile(outPath, buffer);
@@ -302,6 +322,7 @@ export class AlbumExportJob {
         processed++;
         onProgress({ processed, total, pageLabel: page.label });
       }
+      console.log(`[export] all ${total} pages done`);
       return { cancelled: false, files, folder: input.savePath ? destDir : outDir };
     } catch (e) {
       if (e instanceof ExportCancelledError || this.controller.signal.aborted) return { cancelled: true, files, folder: destDir };
