@@ -164,9 +164,15 @@ function popFrameRotation(page: PDFPage) {
 // Any active rotation transform (see pushFrameRotation) must already be pushed by the caller —
 // this function only owns its OWN nested clip, which is scoped to just the image draw so a
 // border drawn after it (still inside the caller's rotation block) isn't clipped by it.
-// `zoom` (100 = cover-fit baseline) scales the already-positioned cover-fit image around the
-// rect's own center, mirroring the CSS `transform: scale()` applied to the <img> (whose CSS box —
-// for transform-origin purposes — is the frame, not the overflowing cover-fit content).
+// `zoom` (100 = cover-fit baseline) is applied to the cover-fit size BEFORE the focal-point
+// position is computed — mirroring computePhotoFraming (the canvas editor's own source of truth)
+// and coverCropRaw (this file's own JPG-side equivalent). An earlier version here instead
+// positioned the plain cover-fit image first and then scaled that already-positioned box around
+// the RECT'S OWN CENTER to apply zoom — a fundamentally different operation from "zoom around the
+// focal point" that visibly drifted away from whichever edge the photographer pinned (a photo
+// focused near the top, at any real zoom, crept downward and lost its top edge). Fixed the same
+// way as the web app's own identical bug in its albumPdf.ts, since this file is a hand-duplicated
+// copy of it.
 function drawCoverImage(
   page: PDFPage,
   image: PDFImage,
@@ -178,30 +184,25 @@ function drawCoverImage(
   const { x, y, width: w, height: h } = rect;
   const imgAspect = image.width / image.height;
   const boxAspect = w / h;
-  let drawW: number;
-  let drawH: number;
-  if (imgAspect > boxAspect) {
-    drawH = h;
-    drawW = h * imgAspect;
+  let baseW: number;
+  let baseH: number;
+  if (imgAspect >= boxAspect) {
+    baseH = h;
+    baseW = h * imgAspect;
   } else {
-    drawW = w;
-    drawH = w / imgAspect;
+    baseW = w;
+    baseH = w / imgAspect;
   }
+  // zoomPct > 100 (not !== 100) matches computePhotoFraming's own guard — zoom is only ever meant
+  // to grow past cover-fit, never shrink below it.
+  const zf = opts?.zoom && opts.zoom > 100 ? opts.zoom / 100 : 1;
+  const drawW = baseW * zf;
+  const drawH = baseH * zf;
   const fx = focalXPct / 100;
   const fy = focalYPct / 100;
-  let dx = x - (drawW - w) * fx;
+  const dx = x - (drawW - w) * fx;
   // PDF's y-axis runs bottom-up, while focalY follows the CSS convention (0 = top) — flip it.
-  let dy = y - (drawH - h) * (1 - fy);
-
-  if (opts?.zoom && opts.zoom !== 100) {
-    const zf = opts.zoom / 100;
-    const cx = x + w / 2;
-    const cy = y + h / 2;
-    dx = cx - (cx - dx) * zf;
-    dy = cy - (cy - dy) * zf;
-    drawW *= zf;
-    drawH *= zf;
-  }
+  const dy = y - (drawH - h) * (1 - fy);
 
   page.pushOperators(pushGraphicsState(), moveTo(x, y), lineTo(x + w, y), lineTo(x + w, y + h), lineTo(x, y + h), closePath(), clip(), endPath());
   page.drawImage(image, { x: dx, y: dy, width: drawW, height: drawH, opacity: opts?.opacity });
