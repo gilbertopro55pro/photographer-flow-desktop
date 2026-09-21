@@ -1,6 +1,6 @@
 import sharp from "sharp";
 import { writePsdBuffer, type Layer, type LayerEffectsInfo } from "ag-psd";
-import { infoHandlers } from "ag-psd/dist/additionalInfo";
+import { infoHandlers } from "ag-psd/dist/additionalInfo.js";
 import { resolvePageElements, coverCropRaw, composePhotoTile, svgTextLayer, shadowLayerPng, ornamentLayerRaw, composeShapeTile, DPI, type PhotoSource } from "./albumRaster.js";
 import { findOrnament } from "./albumOrnaments.js";
 import type { GalleryAlbumRow, GalleryAlbumSpreadRow } from "./albumTypes.js";
