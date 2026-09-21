@@ -2980,8 +2980,7 @@ export default function AlbumSpreadCanvasEditor({
           and splits into two flex columns — a large centered canvas on one side and a
           scrollable controls sidebar on the other — since the cramped max-w-sm modal was a real
           problem on desktop, where there's plenty of room to work more comfortably. */}
-      <div className="w-full max-w-sm lg:max-w-none lg:w-[95vw] lg:h-[92vh] rounded-3xl p-4 lg:px-6 lg:pt-2 lg:pb-4 bg-paper shadow-sheet max-h-[92vh] overflow-y-auto overscroll-contain lg:overflow-visible lg:flex lg:flex-row lg:gap-6">
-        <div className="lg:flex-1 lg:flex lg:flex-col lg:min-w-0 lg:min-h-0">
+      <div className="w-full max-w-sm lg:max-w-none lg:w-[95vw] lg:h-[92vh] rounded-3xl p-4 lg:px-6 lg:pt-2 lg:pb-4 bg-paper shadow-sheet max-h-[92vh] overflow-y-auto overscroll-contain lg:overflow-visible lg:flex lg:flex-col lg:gap-3">
         <div className="flex items-center justify-between mb-1">
           <h2 className="text-base font-bold font-display">{mode === "custom" ? "עיצוב חופשי" : "הוספת טקסט לעמוד"}</h2>
           <div className="flex items-center gap-2">
@@ -3011,6 +3010,148 @@ export default function AlbumSpreadCanvasEditor({
         </div>
         {guideOpen && <AlbumEditorGuideModal onClose={() => setGuideOpen(false)} />}
 
+        {/* Full-width action-button bar, spanning both the canvas column and the sidebar below —
+            matches the web app's own layout (its .gf-album-desktop-buttons spans the whole grid
+            width in its own row, above the canvas/sidebar row). Previously confined to the
+            380px sidebar column, which visibly drifted from where the web app puts it. */}
+        <div className="space-y-2">
+          <div className="flex gap-2">
+            {mode === "custom" && (
+              <button
+                ref={photoSizeButtonRef}
+                onClick={() => {
+                  const rect = photoSizeButtonRef.current?.getBoundingClientRect();
+                  if (rect) setPhotoSizePanelRect({ top: rect.bottom, left: rect.left, width: Math.max(rect.width, 190) });
+                  setPhotoSizePickerOpen(true);
+                }}
+                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink shadow-sm"
+              >
+                + תמונה
+              </button>
+            )}
+            {mode === "custom" && (
+              <button
+                ref={backgroundButtonRef}
+                // Set/unset only — the opacity/blur fine-tune sliders live in their own circle at
+                // the canvas's bottom-left corner (see bgSlidersButtonRef), matching the web app.
+                onClick={backgroundPhoto ? removeBackground : openPickerForBackground}
+                className="flex-1 rounded-lg py-2.5 text-sm font-semibold border shadow-sm"
+                style={{
+                  background: backgroundPhoto ? "var(--color-amber-deep)" : "#fff",
+                  color: backgroundPhoto ? "#fff" : "#201f33",
+                  borderColor: "var(--color-line)",
+                }}
+              >
+                תמונת רקע
+              </button>
+            )}
+            {mode === "custom" && (
+              <button onClick={addFrame} className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink shadow-sm">
+                + מסגרת
+              </button>
+            )}
+            {mode === "custom" && (
+              <button
+                ref={templateButtonRef}
+                onClick={() => {
+                  const r = templateButtonRef.current?.getBoundingClientRect();
+                  if (r) {
+                    const w = Math.max(r.width, 320);
+                    setTemplatePanelRect({ top: r.bottom, left: r.right - w, width: w, maxHeight: panelMaxHeight(r.bottom + 4) });
+                  }
+                  setTemplatePickerOpen(true);
+                }}
+                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink shadow-sm flex items-center justify-center gap-1.5"
+              >
+                <IconGrid size={15} />
+                תבניות
+              </button>
+            )}
+            <button
+              ref={textButtonRef}
+              onClick={() => {
+                const r = textButtonRef.current?.getBoundingClientRect();
+                if (r) {
+                  const w = Math.max(r.width, 320);
+                  setTextPanelRect({ top: r.bottom, left: r.right - w, width: w, maxHeight: panelMaxHeight(r.bottom + 4) });
+                }
+                setTextDraftOpen(true);
+              }}
+              title="הוספת טקסט"
+              className="flex-1 rounded-full py-2.5 text-sm font-semibold bg-white border border-line text-ink shadow-sm flex items-center justify-center gap-1.5"
+            >
+              <span className="flex items-center justify-center h-5 w-5 rounded-full font-display font-bold text-[11px]" style={{ background: "var(--color-chip)" }}>
+                T
+              </span>
+              הוספת טקסט
+            </button>
+          </div>
+          {mode === "custom" && (
+            <div className="flex gap-2">
+              <button
+                ref={masksButtonRef}
+                onClick={() => {
+                  const r = masksButtonRef.current?.getBoundingClientRect();
+                  if (r) setMasksPanelRect({ top: r.bottom, left: r.right - Math.max(r.width, 320), width: Math.max(r.width, 320), maxHeight: panelMaxHeight(r.bottom + 4) });
+                  setMasksPickerOpen(true);
+                }}
+                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink shadow-sm flex items-center justify-center gap-1.5"
+              >
+                <IconMask size={15} />
+                מסכות
+              </button>
+              <button
+                ref={ornamentsButtonRef}
+                onClick={() => {
+                  const r = ornamentsButtonRef.current?.getBoundingClientRect();
+                  if (r) setOrnamentsPanelRect({ top: r.bottom, left: r.right - Math.max(r.width, 320), width: Math.max(r.width, 320), maxHeight: panelMaxHeight(r.bottom + 4) });
+                  setOrnamentsPickerOpen(true);
+                }}
+                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink shadow-sm flex items-center justify-center gap-1.5"
+              >
+                <IconOrnament size={15} />
+                עיטורים
+              </button>
+              <button
+                ref={shapesButtonRef}
+                onClick={() => {
+                  const r = shapesButtonRef.current?.getBoundingClientRect();
+                  if (r) setShapesPanelRect({ top: r.bottom, left: r.right - Math.max(r.width, 320), width: Math.max(r.width, 320), maxHeight: panelMaxHeight(r.bottom + 4) });
+                  setShapesPickerOpen(true);
+                }}
+                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink shadow-sm flex items-center justify-center gap-1.5"
+              >
+                <IconShape size={15} />
+                צורות
+              </button>
+              <button
+                onClick={() => setSaveTemplateOpen(true)}
+                disabled={!elements.some((e) => e.type === "photo")}
+                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink shadow-sm disabled:opacity-50 flex items-center justify-center gap-1.5"
+              >
+                <IconSave size={15} />
+                שמירה כתבנית
+              </button>
+              <button
+                onClick={() => onSave(elements, { photoId: backgroundPhotoId, blur: backgroundBlur, opacity: backgroundOpacity, zoom: backgroundZoom })}
+                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-ink text-white border-2 border-[var(--color-sage)] shadow-sm"
+              >
+                שמירה
+              </button>
+            </div>
+          )}
+          {mode !== "custom" && (
+            <button
+              onClick={() => onSave(elements, { photoId: backgroundPhotoId, blur: backgroundBlur, opacity: backgroundOpacity, zoom: backgroundZoom })}
+              className="w-full rounded-lg py-2.5 text-sm font-semibold bg-ink text-white border-2 border-[var(--color-sage)] shadow-sm"
+            >
+              שמירה
+            </button>
+          )}
+        </div>
+
+        <div className="lg:flex lg:flex-row lg:gap-6 lg:flex-1 lg:min-h-0">
+        <div className="lg:flex-1 lg:flex lg:flex-col lg:min-w-0 lg:min-h-0">
         <div
           ref={canvasWrapRef}
           className="lg:flex-1 lg:flex lg:items-center lg:justify-center lg:min-h-0"
@@ -3893,142 +4034,6 @@ export default function AlbumSpreadCanvasEditor({
           </div>
         )}
 
-        <div className="space-y-2 mt-2.5">
-          <div className="flex gap-2">
-            {mode === "custom" && (
-              <button
-                ref={photoSizeButtonRef}
-                onClick={() => {
-                  const rect = photoSizeButtonRef.current?.getBoundingClientRect();
-                  if (rect) setPhotoSizePanelRect({ top: rect.bottom, left: rect.left, width: Math.max(rect.width, 190) });
-                  setPhotoSizePickerOpen(true);
-                }}
-                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink"
-              >
-                + תמונה
-              </button>
-            )}
-            {mode === "custom" && (
-              <button
-                ref={backgroundButtonRef}
-                // Set/unset only — the opacity/blur fine-tune sliders live in their own circle at
-                // the canvas's bottom-left corner (see bgSlidersButtonRef), matching the web app.
-                onClick={backgroundPhoto ? removeBackground : openPickerForBackground}
-                className="flex-1 rounded-lg py-2.5 text-sm font-semibold border"
-                style={{
-                  background: backgroundPhoto ? "var(--color-amber-deep)" : "#fff",
-                  color: backgroundPhoto ? "#fff" : "#201f33",
-                  borderColor: "var(--color-line)",
-                }}
-              >
-                תמונת רקע
-              </button>
-            )}
-            {mode === "custom" && (
-              <button onClick={addFrame} className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink">
-                + מסגרת
-              </button>
-            )}
-            {mode === "custom" && (
-              <button
-                ref={templateButtonRef}
-                onClick={() => {
-                  const r = templateButtonRef.current?.getBoundingClientRect();
-                  if (r) {
-                    const w = Math.max(r.width, 320);
-                    setTemplatePanelRect({ top: r.bottom, left: r.right - w, width: w, maxHeight: panelMaxHeight(r.bottom + 4) });
-                  }
-                  setTemplatePickerOpen(true);
-                }}
-                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink flex items-center justify-center gap-1.5"
-              >
-                <IconGrid size={15} />
-                תבניות
-              </button>
-            )}
-            <button
-              ref={textButtonRef}
-              onClick={() => {
-                const r = textButtonRef.current?.getBoundingClientRect();
-                if (r) {
-                  const w = Math.max(r.width, 320);
-                  setTextPanelRect({ top: r.bottom, left: r.right - w, width: w, maxHeight: panelMaxHeight(r.bottom + 4) });
-                }
-                setTextDraftOpen(true);
-              }}
-              title="הוספת טקסט"
-              className="flex-1 rounded-full py-2.5 text-sm font-semibold bg-white border border-line text-ink flex items-center justify-center gap-1.5"
-            >
-              <span className="flex items-center justify-center h-5 w-5 rounded-full font-display font-bold text-[11px]" style={{ background: "var(--color-chip)" }}>
-                T
-              </span>
-              הוספת טקסט
-            </button>
-          </div>
-          {mode === "custom" && (
-            <div className="flex gap-2">
-              <button
-                ref={masksButtonRef}
-                onClick={() => {
-                  const r = masksButtonRef.current?.getBoundingClientRect();
-                  if (r) setMasksPanelRect({ top: r.bottom, left: r.right - Math.max(r.width, 320), width: Math.max(r.width, 320), maxHeight: panelMaxHeight(r.bottom + 4) });
-                  setMasksPickerOpen(true);
-                }}
-                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink flex items-center justify-center gap-1.5"
-              >
-                <IconMask size={15} />
-                מסכות
-              </button>
-              <button
-                ref={ornamentsButtonRef}
-                onClick={() => {
-                  const r = ornamentsButtonRef.current?.getBoundingClientRect();
-                  if (r) setOrnamentsPanelRect({ top: r.bottom, left: r.right - Math.max(r.width, 320), width: Math.max(r.width, 320), maxHeight: panelMaxHeight(r.bottom + 4) });
-                  setOrnamentsPickerOpen(true);
-                }}
-                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink flex items-center justify-center gap-1.5"
-              >
-                <IconOrnament size={15} />
-                עיטורים
-              </button>
-              <button
-                ref={shapesButtonRef}
-                onClick={() => {
-                  const r = shapesButtonRef.current?.getBoundingClientRect();
-                  if (r) setShapesPanelRect({ top: r.bottom, left: r.right - Math.max(r.width, 320), width: Math.max(r.width, 320), maxHeight: panelMaxHeight(r.bottom + 4) });
-                  setShapesPickerOpen(true);
-                }}
-                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink flex items-center justify-center gap-1.5"
-              >
-                <IconShape size={15} />
-                צורות
-              </button>
-              <button
-                onClick={() => setSaveTemplateOpen(true)}
-                disabled={!elements.some((e) => e.type === "photo")}
-                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-white border border-line text-ink disabled:opacity-50 flex items-center justify-center gap-1.5"
-              >
-                <IconSave size={15} />
-                שמירה כתבנית
-              </button>
-              <button
-                onClick={() => onSave(elements, { photoId: backgroundPhotoId, blur: backgroundBlur, opacity: backgroundOpacity, zoom: backgroundZoom })}
-                className="flex-1 rounded-lg py-2.5 text-sm font-semibold bg-ink text-white border-2 border-[var(--color-sage)]"
-              >
-                שמירה
-              </button>
-            </div>
-          )}
-          {mode !== "custom" && (
-            <button
-              onClick={() => onSave(elements, { photoId: backgroundPhotoId, blur: backgroundBlur, opacity: backgroundOpacity, zoom: backgroundZoom })}
-              className="w-full rounded-lg py-2.5 text-sm font-semibold bg-ink text-white border-2 border-[var(--color-sage)]"
-            >
-              שמירה
-            </button>
-          )}
-        </div>
-
         {mode === "custom" && (
           <div className="mt-3 pt-3 border-t border-line">
             <div className="flex items-center justify-between mb-1.5 gap-2 flex-wrap">
@@ -4237,6 +4242,7 @@ export default function AlbumSpreadCanvasEditor({
             )}
           </div>
         )}
+        </div>
         </div>
       </div>
 
