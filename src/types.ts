@@ -44,6 +44,11 @@ export type AlbumPhotoElement = {
   // undefined means "derive from `shadow` itself", same coupled behavior as before these existed.
   shadowDistance?: number;
   shadowBlur?: number;
+  // Ported from the web app's own editor — screen-space direction the shadow falls in (0=right,
+  // 90=down, 180=left, 270=up, clockwise), independent of intensity/distance/blur. Undefined means
+  // 45° (down-right), the app's old fixed direction — kept as the default so every already-designed
+  // album stays pixel-identical unless a photographer explicitly touches the angle slider.
+  shadowAngle?: number;
   zoom?: number;
   lockAspect?: boolean;
   maskId?: string;
@@ -106,6 +111,7 @@ export type AlbumOrnamentElement = {
   rotation?: number;
   opacity?: number;
   shadow?: number; // 0-100, same scale/meaning as AlbumPhotoElement.shadow — set by the web editor, exported by both
+  shadowAngle?: number; // see AlbumPhotoElement.shadowAngle's own comment
   borderWidth?: number; // px, same scale/meaning as AlbumPhotoElement.borderWidth
   borderColor?: string;
   locked?: boolean; // see AlbumPhotoElement.locked's own comment
@@ -127,6 +133,7 @@ export type AlbumShapeElement = {
   rotation?: number;
   opacity?: number;
   shadow?: number;
+  shadowAngle?: number; // see AlbumPhotoElement.shadowAngle's own comment
   borderWidth?: number;
   borderColor?: string;
   // undefined = the normal solid-fill (optionally mask-clipped) shape. The two outline kinds have

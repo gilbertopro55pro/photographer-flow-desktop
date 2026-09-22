@@ -223,18 +223,23 @@ function drawPhotoShadow(
   rect: { x: number; y: number; width: number; height: number },
   shadowPct: number | undefined,
   distancePct?: number,
-  blurPct?: number
+  blurPct?: number,
+  angleDeg?: number
 ) {
   if (!shadowPct) return;
   const offsetPt = ((distancePct ?? shadowPct) / 100) * 10;
   const maxSpread = ((blurPct ?? shadowPct) / 100) * 24;
   const baseAlpha = 0.15 + (shadowPct / 100) * 0.45;
+  const magnitude = offsetPt * Math.SQRT2;
+  const angleRad = ((angleDeg ?? 45) * Math.PI) / 180;
+  const offsetX = magnitude * Math.cos(angleRad);
+  const offsetY = magnitude * Math.sin(angleRad);
   const layers = 4;
   for (let i = layers; i >= 1; i--) {
     const spread = (maxSpread * i) / layers;
     page.drawRectangle({
-      x: rect.x - spread + offsetPt,
-      y: rect.y - spread - offsetPt,
+      x: rect.x - spread + offsetX,
+      y: rect.y - spread - offsetY,
       width: rect.width + spread * 2,
       height: rect.height + spread * 2,
       color: rgb(0, 0, 0),
@@ -541,7 +546,7 @@ export async function generateAlbumPdf({
           if (!image) continue;
           const rect = { x, y, width, height };
           pushFrameRotation(page, rect, el.rotation);
-          drawPhotoShadow(page, rect, el.shadow);
+          drawPhotoShadow(page, rect, el.shadow, undefined, undefined, el.shadowAngle);
           page.drawImage(image, { x, y, width, height, opacity: el.opacity !== undefined ? el.opacity / 100 : undefined });
           if (el.borderWidth) {
             page.drawRectangle({ x, y, width, height, borderWidth: el.borderWidth, borderColor: rgb(...hexToRgbTuple(el.borderColor ?? "#ffffff")) });
@@ -559,7 +564,7 @@ export async function generateAlbumPdf({
           if (!image) continue;
           const rect = { x, y, width, height };
           pushFrameRotation(page, rect, el.rotation);
-          drawPhotoShadow(page, rect, el.shadow);
+          drawPhotoShadow(page, rect, el.shadow, undefined, undefined, el.shadowAngle);
           page.drawImage(image, { x, y, width, height, opacity: el.opacity !== undefined ? el.opacity / 100 : undefined });
           // The stroke is already baked into the image itself for outline shapes (see embedShape) —
           // drawing the usual decorative rect border on top would double it, and would be flatly
@@ -606,7 +611,7 @@ export async function generateAlbumPdf({
           );
           if (!maskedImage) continue;
           pushFrameRotation(page, rect, el.rotation);
-          drawPhotoShadow(page, rect, el.shadow, el.shadowDistance, el.shadowBlur);
+          drawPhotoShadow(page, rect, el.shadow, el.shadowDistance, el.shadowBlur, el.shadowAngle);
           page.drawImage(maskedImage, { x, y, width, height, opacity: el.opacity !== undefined ? el.opacity / 100 : undefined });
           if (el.borderWidth) {
             page.drawRectangle({ x, y, width, height, borderWidth: el.borderWidth, borderColor: rgb(...hexToRgbTuple(el.borderColor ?? "#ffffff")) });
@@ -635,7 +640,7 @@ export async function generateAlbumPdf({
         );
         if (!image) continue;
         pushFrameRotation(page, rect, el.rotation);
-        drawPhotoShadow(page, rect, el.shadow, el.shadowDistance, el.shadowBlur);
+        drawPhotoShadow(page, rect, el.shadow, el.shadowDistance, el.shadowBlur, el.shadowAngle);
         drawCoverImage(page, image, rect, el.focalX, el.focalY, { opacity: el.opacity !== undefined ? el.opacity / 100 : undefined, zoom: el.zoom });
         if (el.borderWidth) {
           page.drawRectangle({

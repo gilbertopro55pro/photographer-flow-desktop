@@ -776,6 +776,14 @@ function PhotoShadowOverlayPanel({
             unit="%"
             onChange={(v) => onUpdate({ shadowBlur: v })}
           />
+          <MiniSlider
+            label="זווית צל"
+            value={el.shadowAngle ?? 45}
+            min={0}
+            max={360}
+            unit="°"
+            onChange={(v) => onUpdate({ shadowAngle: v })}
+          />
         </>
       )}
       <MiniSlider label="קו מתאר" value={el.borderWidth ?? 0} min={0} max={50} unit="px" onChange={(v) => onUpdate({ borderWidth: v })} />
@@ -926,6 +934,20 @@ function OrnamentFloatingMenu({
         ))}
       </div>
       <MiniSlider label="שקיפות" value={el.opacity ?? 100} min={0} max={100} unit="%" onChange={(v) => onUpdate({ opacity: v })} />
+      {/* el.shadow already flows all the way through every renderer (live CSS, JPG raster, PDF, PSD
+          Layer Style) — these sliders were simply missing, so there was no way to actually set it
+          from the UI despite full render support existing. */}
+      <MiniSlider label="עוצמת צל" value={el.shadow ?? 0} min={0} max={100} unit="%" onChange={(v) => onUpdate({ shadow: v })} />
+      {!!el.shadow && (
+        <MiniSlider
+          label="זווית צל"
+          value={el.shadowAngle ?? 45}
+          min={0}
+          max={360}
+          unit="°"
+          onChange={(v) => onUpdate({ shadowAngle: v })}
+        />
+      )}
       <MiniSlider label="קו מתאר" value={el.borderWidth ?? 0} min={0} max={50} unit="px" onChange={(v) => onUpdate({ borderWidth: v })} />
       {!!el.borderWidth && (
         <div className="flex items-center gap-1.5">
@@ -1024,6 +1046,16 @@ function ShapeFloatingMenu({
       )}
       <MiniSlider label="שקיפות" value={el.opacity ?? 100} min={0} max={100} unit="%" onChange={(v) => onUpdate({ opacity: v })} />
       <MiniSlider label="עוצמת צל" value={el.shadow ?? 0} min={0} max={100} unit="%" onChange={(v) => onUpdate({ shadow: v })} />
+      {!!el.shadow && (
+        <MiniSlider
+          label="זווית צל"
+          value={el.shadowAngle ?? 45}
+          min={0}
+          max={360}
+          unit="°"
+          onChange={(v) => onUpdate({ shadowAngle: v })}
+        />
+      )}
       <MiniSlider label="קו מתאר" value={el.borderWidth ?? 0} min={0} max={50} unit="px" onChange={(v) => onUpdate({ borderWidth: v })} />
       {!!el.borderWidth && (
         <div className="flex items-center gap-1.5">
@@ -1226,12 +1258,16 @@ export function cssFilterFor(
 
 // box-shadow (unlike filter: drop-shadow on a descendant) isn't clipped by the frame's own
 // overflow-hidden, so it's the one that can actually bleed outside a cropped photo frame.
-export function boxShadowFor(shadowPct: number | undefined, distancePct?: number, blurPct?: number): string | undefined {
+export function boxShadowFor(shadowPct: number | undefined, distancePct?: number, blurPct?: number, angleDeg?: number): string | undefined {
   if (!shadowPct) return undefined;
   const blurPx = ((blurPct ?? shadowPct) / 100) * 24;
   const offsetPx = ((distancePct ?? shadowPct) / 100) * 10;
   const alpha = 0.15 + (shadowPct / 100) * 0.45;
-  return `${offsetPx}px ${offsetPx}px ${blurPx}px rgba(0,0,0,${alpha})`;
+  const magnitude = offsetPx * Math.SQRT2;
+  const angleRad = ((angleDeg ?? 45) * Math.PI) / 180;
+  const offsetX = (magnitude * Math.cos(angleRad)).toFixed(2);
+  const offsetY = (magnitude * Math.sin(angleRad)).toFixed(2);
+  return `${offsetX}px ${offsetY}px ${blurPx}px rgba(0,0,0,${alpha})`;
 }
 
 // Anchored flyout panels (masks/ornaments/shapes) open below their trigger button, which can sit
@@ -2396,9 +2432,9 @@ export default function AlbumSpreadCanvasEditor({
   const applyShadowToAllPhotos = (id: string) => {
     const source = elements.find((e) => e.id === id);
     if (!source || source.type !== "photo") return;
-    const { shadow, shadowDistance, shadowBlur, borderWidth, borderColor } = source;
+    const { shadow, shadowDistance, shadowBlur, shadowAngle, borderWidth, borderColor } = source;
     setElements((prev) =>
-      prev.map((e) => (e.type === "photo" ? { ...e, shadow, shadowDistance, shadowBlur, borderWidth, borderColor } : e))
+      prev.map((e) => (e.type === "photo" ? { ...e, shadow, shadowDistance, shadowBlur, shadowAngle, borderWidth, borderColor } : e))
     );
   };
 
@@ -3448,7 +3484,7 @@ export default function AlbumSpreadCanvasEditor({
                       // later sibling div below (guaranteed to paint above the img), matching the
                       // web app's own fix — selection outline and photo border no longer compete for
                       // the same CSS property.
-                      boxShadow: boxShadowFor(el.shadow, el.shadowDistance, el.shadowBlur),
+                      boxShadow: boxShadowFor(el.shadow, el.shadowDistance, el.shadowBlur, el.shadowAngle),
                       // Rotation lives on THIS element (not the <img>) so the outline and
                       // box-shadow — both decorations of this same box — rotate along with the
                       // clipped photo as one rigid tile, instead of only the image content
@@ -3555,6 +3591,7 @@ export default function AlbumSpreadCanvasEditor({
                         ? "2px dashed var(--color-amber-deep)"
                         : "none",
                       outlineOffset: el.borderWidth ? `-${el.borderWidth}px` : undefined,
+                      boxShadow: boxShadowFor(el.shadow, undefined, undefined, el.shadowAngle),
                     }}
                   >
                     {imgSrc &&
@@ -3624,7 +3661,7 @@ export default function AlbumSpreadCanvasEditor({
                         ? "2px dashed var(--color-amber-deep)"
                         : "none",
                       outlineOffset: isOutline ? "2px" : el.borderWidth ? `-${el.borderWidth}px` : undefined,
-                      boxShadow: boxShadowFor(el.shadow),
+                      boxShadow: boxShadowFor(el.shadow, undefined, undefined, el.shadowAngle),
                     }}
                   >
                     {!isOutline && (

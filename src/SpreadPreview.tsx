@@ -20,12 +20,16 @@ export function cssFilterFor(filter: "none" | "bw" | "sepia" | undefined, blurPc
   return parts.length ? parts.join(" ") : undefined;
 }
 
-export function boxShadowFor(shadowPct: number | undefined): string | undefined {
+export function boxShadowFor(shadowPct: number | undefined, angleDeg?: number): string | undefined {
   if (!shadowPct) return undefined;
   const blurPx = (shadowPct / 100) * 24;
   const offsetPx = (shadowPct / 100) * 10;
   const alpha = 0.15 + (shadowPct / 100) * 0.45;
-  return `${offsetPx}px ${offsetPx}px ${blurPx}px rgba(0,0,0,${alpha})`;
+  const magnitude = offsetPx * Math.SQRT2;
+  const angleRad = ((angleDeg ?? 45) * Math.PI) / 180;
+  const offsetX = (magnitude * Math.cos(angleRad)).toFixed(2);
+  const offsetY = (magnitude * Math.sin(angleRad)).toFixed(2);
+  return `${offsetX}px ${offsetY}px ${blurPx}px rgba(0,0,0,${alpha})`;
 }
 
 function TextOverlay({ el }: { el: AlbumTextElement }) {
@@ -63,7 +67,7 @@ function PhotoTile({ el, url }: { el: AlbumPhotoElement; url: string | undefined
         // Drop shadow only — stays on this element (not clipped by its own overflow-hidden, so
         // it can bleed past the cropped frame; a CHILD's box-shadow would be clipped by this
         // parent's overflow, which is why the border below is handled differently).
-        boxShadow: boxShadowFor(el.shadow),
+        boxShadow: boxShadowFor(el.shadow, el.shadowAngle),
         transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
       }}
     >
@@ -130,6 +134,7 @@ function OrnamentOverlay({ el, customUrl }: { el: AlbumOrnamentElement; customUr
         // Same 1600pt-reference cqw scaling as PhotoTile's border above — see its comment.
         outline: el.borderWidth ? `calc(${el.borderWidth} / 1600 * 100cqw) solid ${el.borderColor ?? "#fff"}` : "none",
         outlineOffset: el.borderWidth ? `calc(${el.borderWidth} / -1600 * 100cqw)` : undefined,
+        boxShadow: boxShadowFor(el.shadow, el.shadowAngle),
       }}
     >
       {customTint ? (
@@ -167,6 +172,7 @@ function ShapeOverlay({ el }: { el: AlbumShapeElement }) {
         height: `${el.heightPct}%`,
         opacity: (el.opacity ?? 100) / 100,
         transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
+        boxShadow: boxShadowFor(el.shadow, el.shadowAngle),
       }}
     >
       <div

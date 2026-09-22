@@ -57,12 +57,31 @@ if (lrFXHandlerIndex !== -1) infoHandlers.splice(lrFXHandlerIndex, 1);
 // because real Photoshop-authored files always write the full descriptor; ag-psd's types mark most
 // of them optional, but omitting them was never actually verified against real Photoshop before
 // the first attempt at this (photos only) — see that commit for the investigation.
-function buildLayerEffects(shadowPct: number | undefined, borderWidth: number | undefined, borderColor: string | undefined): LayerEffectsInfo | undefined {
+// angleDeg is in this app's own screen convention (0=right, 90=down, 180=left, 270=up, clockwise —
+// see boxShadowFor in AlbumSpreadCanvasEditor.tsx/SpreadPreview.tsx). Photoshop's own dropShadow.angle
+// is a DIFFERENT convention: it's the LIGHT source direction (standard math angle, counterclockwise
+// from east, Y-up), and the shadow falls opposite the light — confirmed against Adobe's own docs:
+// angle=90 means light from straight above, shadow straight down. Converting our screen-space
+// shadow-direction angle to Photoshop's light-direction angle needs both a handedness flip (CW vs
+// CCW) and a 180° flip (shadow direction vs light direction), which combine to: psAngle = 180 -
+// angleDeg. The default (45, down-right) converts to 135 — exactly this function's old hardcoded
+// value, a good sanity check the conversion is right.
+// Photoshop's own per-effect Angle field only accepts/displays -180..180, not the full 0..360 a
+// naive conversion produces — confirmed by real-Photoshop testing on the RG0 web repo (same ag-psd
+// version, same code): a value written outside that range (e.g. 270, 340) silently displayed as a
+// stuck 180 in the Layer Style dialog, even though the file's own bytes were independently verified
+// correct via raw byte parsing. So the raw 0..360 result is re-wrapped into -180..180 before writing.
+function psAngleFromScreenAngle(angleDeg: number): number {
+  const normalized = ((180 - angleDeg) % 360 + 360) % 360;
+  return normalized > 180 ? normalized - 360 : normalized;
+}
+
+function buildLayerEffects(shadowPct: number | undefined, borderWidth: number | undefined, borderColor: string | undefined, angleDeg: number | undefined): LayerEffectsInfo | undefined {
   const effects: LayerEffectsInfo = {};
   const linearContour = { name: "Linear", curve: [{ x: 0, y: 0 }, { x: 255, y: 255 }] };
   if (shadowPct) {
     const blurPx = Math.max(1, (shadowPct / 100) * 24);
-    const offsetPx = Math.round((shadowPct / 100) * 10);
+    const offsetPx = (shadowPct / 100) * 10;
     const opacity = 0.15 + (shadowPct / 100) * 0.45;
     effects.dropShadow = [
       {
@@ -70,7 +89,7 @@ function buildLayerEffects(shadowPct: number | undefined, borderWidth: number | 
         present: true,
         showInDialog: true,
         useGlobalLight: false,
-        angle: 135,
+        angle: psAngleFromScreenAngle(angleDeg ?? 45),
         distance: { units: "Pixels", value: Math.round(offsetPx * Math.SQRT2) },
         choke: { units: "Pixels", value: 0 },
         size: { units: "Pixels", value: Math.round(blurPx) },
@@ -217,7 +236,7 @@ export async function renderAlbumPagePsd({
       const centerY = el.y + h / 2;
       const top = Math.round(centerY - rendered.height / 2);
       const left = Math.round(centerX - rendered.width / 2);
-      const ornamentEffects = buildLayerEffects(el.shadow, el.borderWidth, el.borderColor);
+      const ornamentEffects = buildLayerEffects(el.shadow, el.borderWidth, el.borderColor, el.shadowAngle);
       children.push({
         name: "עיטור",
         top,
@@ -250,7 +269,7 @@ export async function renderAlbumPagePsd({
       any = true;
       const top = Math.round(frameTop + tile.top);
       const left = Math.round(frameLeft + tile.left);
-      const shapeEffects = buildLayerEffects(el.shadow, isOutlineShape ? undefined : el.borderWidth, el.borderColor);
+      const shapeEffects = buildLayerEffects(el.shadow, isOutlineShape ? undefined : el.borderWidth, el.borderColor, el.shadowAngle);
       children.push({
         name: "צורה",
         top,
@@ -289,7 +308,7 @@ export async function renderAlbumPagePsd({
     any = true;
     const top = Math.round(frameTop + tile.top);
     const left = Math.round(frameLeft + tile.left);
-    const effects = buildLayerEffects(el.shadow, el.borderWidth, el.borderColor);
+    const effects = buildLayerEffects(el.shadow, el.borderWidth, el.borderColor, el.shadowAngle);
     children.push({
       name: "תמונה",
       top,
